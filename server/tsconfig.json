@@ -1,0 +1,17 @@
+{
+  "compilerOptions": {
+    "module": "commonjs",
+    "target": "ES2022",
+    "moduleResolution": "node",
+    "emitDecoratorMetadata": true,
+    "experimentalDecorators": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "strict": false,
+    "strictPropertyInitialization": false,
+    "resolveJsonModule": true,
+    "outDir": "dist",
+    "baseUrl": "src"
+  },
+  "include": ["src/**/*.ts"]
+}

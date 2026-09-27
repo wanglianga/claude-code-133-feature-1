@@ -1,0 +1,21 @@
+* { box-sizing: border-box; }
+body { margin: 0; background: #f2f5f3; font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; flex-wrap: wrap; gap: 8px; }
+.page-title { font-size: 20px; font-weight: 600; }
+.muted { color: #8892a0; font-size: 12px; }
+.stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+.stat-card { background: #fff; border-radius: 10px; padding: 14px 16px; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.stat-card .v { font-size: 24px; font-weight: 700; margin-top: 4px; }
+.stat-card .l { color: #6b7685; font-size: 12px; }
+.bar-track { background: #eef1ef; border-radius: 6px; height: 14px; overflow: hidden; }
+.bar-fill { height: 100%; background: linear-gradient(90deg, #5aa17f, #2f6b4f); border-radius: 6px; }
+.bar-fill.red { background: linear-gradient(90deg, #ff9c6e, #cf1322); }
+.bar-fill.gold { background: linear-gradient(90deg, #ffd666, #d48806); }
+.bar-wrap { display: flex; align-items: center; gap: 10px; }
+.bar-wrap .bar-track { flex: 1; }
+.bar-wrap .bar-num { width: 70px; text-align: right; font-variant-numeric: tabular-nums; }
+.route-station { display: flex; align-items: center; gap: 8px; }
+.route-dot { width: 12px; height: 12px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 0 0 1px #c9d2cb; }
+.timeline-box { background: #fafafa; border: 1px solid #eee; border-radius: 8px; padding: 12px; max-height: 300px; overflow: auto; }
+.tag-gap > * { margin-bottom: 4px; }

@@ -1,0 +1,31 @@
+{
+  "name": "scenic-shuttle-server",
+  "version": "1.0.0",
+  "private": true,
+  "description": "景区观光车排队上车与站点调度平台 - 后端",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "ts-node src/main.ts",
+    "start:prod": "node dist/main.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "^10.4.4",
+    "@nestjs/core": "^10.4.4",
+    "@nestjs/platform-express": "^10.4.4",
+    "@nestjs/typeorm": "^10.0.2",
+    "better-sqlite3": "^11.10.0",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "mysql2": "^3.11.3",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1",
+    "typeorm": "^0.3.20"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.11",
+    "@types/express": "^4.17.21",
+    "@types/node": "^22.7.4",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "scenic-shuttle-platform",
+  "version": "1.0.0",
+  "private": true,
+  "description": "景区观光车排队上车与站点调度平台（NestJS + React + SQLite/MySQL）",
+  "scripts": {
+    "install:all": "npm install --prefix server && npm install --prefix web",
+    "dev:server": "npm start --prefix server",
+    "dev:web": "npm run dev --prefix web",
+    "test:e2e": "node server/scripts/scenario-check.mjs"
+  }
+}
