@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import {
-  Card, Table, Tag, Space, Button, Tabs, Badge, Modal, Input, message, Typography, Alert, Empty,
+  Card, Table, Tag, Space, Button, Tabs, Badge, Modal, Input, Select, message, Typography, Alert, Empty,
 } from 'antd';
 import { api, fen, TICKET_TYPE } from '../api';
 import { useApi } from '../hooks';
+import { EtaText, SkipRecordTimeline, skipStatusTag } from '../components/SkipShared';
 
 const FAULT_LABEL: Record<string, string> = {
   visitor: '游客自身', storm: '暴雨停运', vehicle: '车辆故障', schedule: '调度延误', other: '其他',
@@ -24,6 +25,7 @@ export default function ServicePage() {
 
   const pending = wb?.pendingRefunds || [];
   const escalated = wb?.escalatedRefunds || [];
+  const skipComplaints = wb?.skipComplaints || [];
 
   const refundCols = (mode: 'agent' | 'supervisor') => [
     { title: '退票单', dataIndex: 'code', width: 150 },
@@ -67,11 +69,17 @@ export default function ServicePage() {
       <div className="stat-row">
         <div className="stat-card"><div className="l">待审退票</div><div className="v" style={{ color: '#d46b08' }}>{wb?.counts?.pendingRefund ?? 0}</div></div>
         <div className="stat-card"><div className="l">主管处理中</div><div className="v" style={{ color: '#722ed1' }}>{wb?.counts?.escalated ?? 0}</div></div>
+        <div className="stat-card"><div className="l">跳站投诉</div><div className="v" style={{ color: '#cf1322' }}>{wb?.counts?.skipComplaint ?? 0}</div></div>
         <div className="stat-card"><div className="l">待处理事件</div><div className="v">{wb?.counts?.openIncident ?? 0}</div></div>
       </div>
 
       <Tabs
         items={[
+          {
+            key: 'skip',
+            label: <Badge count={skipComplaints.length} size="small">满载跳站投诉</Badge>,
+            children: <SkipComplaintTable records={skipComplaints} refresh={refresh} />,
+          },
           {
             key: 'pending',
             label: <Badge count={pending.length} size="small">退票审核</Badge>,
@@ -92,6 +100,98 @@ export default function ServicePage() {
         ]}
       />
     </Space>
+  );
+}
+
+function SkipComplaintTable({ records, refresh }: { records: any[]; refresh: () => void }) {
+  const [detailFor, setDetailFor] = useState<any>(null);
+  const [handleFor, setHandleFor] = useState<any>(null);
+  const [resolution, setResolution] = useState<'compensation' | 'transfer' | 'refund_guide' | 'explain'>('compensation');
+  const [note, setNote] = useState('已电话联系游客说明情况');
+
+  return (
+    <>
+      <Alert type="info" showIcon style={{ marginBottom: 12 }}
+        message="客服用同一条跳站记录处理投诉：记录内含跳站原因、车内人数、下一班预计到达、站点确认与调度处置（增派空车/留座规则），无需再向站点/调度反复核实。" />
+      <Table rowKey="id" size="small" pagination={false} dataSource={records}
+        locale={{ emptyText: <Empty description="暂无跳站投诉" /> }}
+        columns={[
+          { title: '跳站记录', dataIndex: 'code', width: 130 },
+          { title: '站点/线路', key: 's', render: (_: any, r: any) =>
+            <Space direction="vertical" size={0}><b>{r.stationName}</b><span className="muted">{r.routeName}</span></Space> },
+          { title: '事实依据', key: 'fact',
+            render: (_: any, r: any) => (
+              <Space direction="vertical" size={0}>
+                <span><Tag color="red">车内 {r.onboardCount}/{r.capacity}</Tag>滞留 {r.waitingPeople} 人</span>
+                <span className="muted">跳站班次 {r.tripCode} · {r.vehicleCode}</span>
+              </Space>
+            ) },
+          { title: '下一班', key: 'eta', width: 140, render: (_: any, r: any) => <EtaText rec={r} /> },
+          { title: '确认/处置', key: 'cf',
+            render: (_: any, r: any) => (
+              <Space direction="vertical" size={0}>
+                <span>{r.stationConfirmedAt
+                  ? <Tag color="green">站点已确认·{r.stationConfirmedBy}</Tag>
+                  : <Tag color="orange">待站点确认</Tag>}</span>
+                <span className="muted">{r.dispatchAction || '调度处置中'}</span>
+                <span>{r.dispatchReviewedAt ? <Tag color="blue">主管已复核</Tag> : <Tag>待主管复核</Tag>}</span>
+              </Space>
+            ) },
+          { title: '状态', key: 'st', width: 110, render: (_: any, r: any) => skipStatusTag(r.status) },
+          {
+            title: '客服处理', key: 'op', width: 200,
+            render: (_: any, r: any) => (
+              <Space wrap>
+                <Button size="small" type="primary" onClick={() => { setHandleFor(r); setResolution('compensation'); setNote('已电话联系游客说明情况'); }}>
+                  办结投诉
+                </Button>
+                <Button size="small" type="link" onClick={() => setDetailFor(r)}>完整记录</Button>
+              </Space>
+            ),
+          },
+        ]} />
+
+      {detailFor && (
+        <Modal open title={`${detailFor.code} 跳站解释全记录`} footer={null} width={680}
+          onCancel={() => setDetailFor(null)}>
+          <Space direction="vertical" style={{ width: '100%' }} size={6}>
+            <div><b>跳站原因：</b>{detailFor.reason}</div>
+            <div><b>等待补偿：</b>{detailFor.compensation}</div>
+            <div><b>换乘建议：</b>{detailFor.transferAdvice}</div>
+            <div><b>等候策略：</b>{detailFor.waitingPolicy}</div>
+            {detailFor.affectedGroups?.length > 0 && (
+              <div><b>受影响游客：</b>
+                {detailFor.affectedGroups.map((g: any) =>
+                  <Tag key={g.entryId}>{g.visitorName}（{g.ticketCode}，{g.partySize}人）</Tag>)}
+              </div>
+            )}
+            <SkipRecordTimeline rec={detailFor} />
+          </Space>
+        </Modal>
+      )}
+
+      {handleFor && (
+        <Modal open title={`办结跳站投诉：${handleFor.code}（${handleFor.stationName}）`}
+          onCancel={() => setHandleFor(null)}
+          onOk={async () => {
+            await api.post(`/skip-records/${handleFor.id}/complaint/handle`, { resolution, note, agentName: '客服' });
+            message.success('投诉已办结，结论同步至游客车票页与跳站时间线');
+            setHandleFor(null);
+            refresh();
+          }}>
+          <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+            <Select style={{ width: '100%' }} value={resolution} onChange={v => setResolution(v)}
+              options={[
+                { value: 'compensation', label: '发放等待补偿（水/礼品/8折券）' },
+                { value: 'transfer', label: '安排换乘/电瓶车短驳' },
+                { value: 'refund_guide', label: '引导全额退票（调度责任）' },
+                { value: 'explain', label: '仅解释原因与下一班时刻' },
+              ]} />
+            <Input.TextArea rows={3} value={note} onChange={e => setNote(e.target.value)} />
+          </Space>
+        </Modal>
+      )}
+    </>
   );
 }
 

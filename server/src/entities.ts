@@ -27,6 +27,7 @@ export class Station {
   @Column({ default: 0 }) flowLimitPerHour: number;     // 景点限流：0 不限
   @Column({ default: false }) isHot: boolean;           // 热门站点
   @Column({ default: 'normal' }) status: 'normal' | 'restricted' | 'closed';
+  @Column('int', { default: 0 }) dispatchSeatReserve: number; // 不满载离站规则：为本站预留座位数（0=不预留）
 }
 
 /* ---------------- 车辆与司机 ---------------- */
@@ -99,6 +100,7 @@ export class Trip {
   @Column('int', { default: 0 }) wheelchairHeld: number;
   @Column('int', { default: 0 }) boardedCount: number;
   @Column('simple-json', { nullable: true }) skippedStations: number[] | null;
+  @Column('simple-json', { nullable: true }) reservedForStations: number[] | null; // 留座规则生效的下游站
   @Column({ default: '' }) suspendReason: string;
   @Column({ default: '' }) delayReason: string;
 }
@@ -146,6 +148,7 @@ export class QueueEntry {
   @Column({ nullable: true }) boardAt: string | null;
   @Column({ nullable: true }) tripId: number | null;
   @Column('int', { default: 0 }) waitSeconds: number;
+  @Column({ nullable: true }) skipRecordId: number | null; // 曾被满载跳站的记录（转回排队后仍保留）
 }
 
 /* ---------------- 事件中心（票 / 班车串联所有角色） ---------------- */
@@ -168,6 +171,7 @@ export class Incident {
   @Column({ nullable: true }) stationId: number | null;
   @Column({ nullable: true }) vehicleId: number | null;
   @Column({ nullable: true }) refundId: number | null;
+  @Column({ nullable: true }) skipRecordId: number | null;
   @Column({ default: 'dispatch' })
   raisedByRole: 'visitor' | 'staff' | 'driver' | 'dispatch' | 'service' | 'finance' | 'system';
   @Column({ default: 'open' }) status: 'open' | 'processing' | 'escalated' | 'resolved' | 'closed';
@@ -243,6 +247,62 @@ export class GeofenceEvent {
   @Column() at: string;
 }
 
+/* ---------------- 满载跳站解释记录（站务/调度/游客/客服共用同一条记录） ---------------- */
+
+export type SkipRecordStatus = 'recorded' | 'station_confirmed' | 'dispatch_reviewed' | 'closed';
+
+@Entity('skip_records')
+export class SkipRecord {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() code: string;            // SR20260925-001
+  @Column() stationId: number;
+  @Column() tripId: number;          // 跳站的那班车
+  @Column() vehicleId: number;
+  @Column({ nullable: true }) incidentId: number | null;
+
+  /* —— 跳站解释三要素：原因 / 车内人数 / 下一班预计到达 —— */
+  @Column({ default: '车辆到达本站时已满载，座位余量为 0，无法开门上客' })
+  reason: string;
+  @Column('int') onboardCount: number;       // 跳站时车内人数
+  @Column('int') capacity: number;
+  @Column('int', { default: 0 }) waitingGroups: number;
+  @Column('int', { default: 0 }) waitingPeople: number;
+  @Column({ default: '' }) nextTripCode: string;   // 下一班预计到达
+  @Column({ nullable: true }) nextEtaAt: string | null;
+  @Column('int', { default: 0 }) nextEtaMinutes: number;
+
+  /* —— 游客侧：等待补偿 / 换乘建议；站点侧：等候策略 —— */
+  @Column({ default: '' }) compensation: string;
+  @Column({ default: '' }) transferAdvice: string;
+  @Column({ default: '原地等候下一班，优先组仍按优先队列叫号' }) waitingPolicy: string;
+
+  /* —— 站点负责人确认 —— */
+  @Column({ default: '' }) stationManagerNote: string;
+  @Column({ nullable: true }) stationConfirmedAt: string | null;
+  @Column({ nullable: true }) stationConfirmedBy: string | null;
+
+  /* —— 调度处置与主管复核 —— */
+  @Column({ nullable: true }) reliefTripId: number | null;  // 临时增派的空车班次
+  @Column('int', { default: 0 }) seatReserveSet: number;    // 当时下发的留座数
+  @Column({ default: '' }) dispatchAction: string;
+  @Column({ nullable: true }) dispatchHandledAt: string | null;
+  @Column({ default: '' }) dispatchSupervisorNote: string;
+  @Column({ nullable: true }) dispatchReviewedAt: string | null;
+  @Column({ nullable: true }) dispatchReviewedBy: string | null;
+
+  /* —— 客服用同一记录处理投诉 —— */
+  @Column({ default: 'none' })
+  complaintStatus: 'none' | 'open' | 'handling' | 'closed';
+  @Column({ default: '' }) complaintNote: string;
+  @Column({ nullable: true }) complaintHandledAt: string | null;
+
+  @Column({ default: 'recorded' }) status: SkipRecordStatus;
+  @Column({ nullable: true }) closedAt: string | null;
+  @Column('simple-json', { nullable: true })
+  timeline: { at: string; role: string; text: string }[] | null;
+  @Column() createdAt: string;
+}
+
 /* ---------------- 团队包车 ---------------- */
 
 @Entity('charter_orders')
@@ -268,5 +328,6 @@ export class CharterOrder {
 
 export const ALL_ENTITIES = [
   RouteLine, Station, Vehicle, Driver, SafetyCheck, Trip, Ticket, QueueEntry,
-  Incident, Refund, Broadcast, Weather, RoadControl, GeofenceEvent, CharterOrder,
+  Incident, Refund, Broadcast, Weather, RoadControl, GeofenceEvent, SkipRecord,
+  CharterOrder,
 ];

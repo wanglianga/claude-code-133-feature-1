@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Refund, Ticket, Incident, Trip } from '../entities';
 import { IncidentsService } from '../incidents/incidents.service';
+import { SkipRecordsService } from '../skip-records/skip-records.service';
 import { now } from '../common';
 
 @Injectable()
@@ -13,16 +14,18 @@ export class ServiceService {
     @InjectRepository(Incident) private readonly incidents: Repository<Incident>,
     @InjectRepository(Trip) private readonly trips: Repository<Trip>,
     private readonly incidentSvc: IncidentsService,
+    private readonly skipRecords: SkipRecordsService,
   ) {}
 
-  /** 客服工作台：待办退票 + 开放事件 */
+  /** 客服工作台：待办退票 + 开放事件 + 跳站投诉（与站务/调度共用同一条跳站记录） */
   async workbench() {
-    const [pendingRefunds, openIncidents, escalated] = await Promise.all([
+    const [pendingRefunds, openIncidents, escalated, skipComplaints] = await Promise.all([
       this.refunds.find({ where: { status: 'pending' }, order: { id: 'ASC' } }),
       this.incidents.find({
         where: { status: 'open' as any }, order: { id: 'ASC' },
       }),
       this.refunds.find({ where: { status: 'escalated' }, order: { id: 'ASC' } }),
+      this.skipRecords.list({ complaint: 'open' }),
     ]);
     const ticketRows = await this.tickets.find();
     const tMap = new Map(ticketRows.map(t => [t.id, t]));
@@ -31,10 +34,12 @@ export class ServiceService {
       pendingRefunds: pendingRefunds.map(withTicket),
       escalatedRefunds: escalated.map(withTicket),
       openIncidents,
+      skipComplaints,
       counts: {
         pendingRefund: pendingRefunds.length,
         escalated: escalated.length,
         openIncident: openIncidents.length,
+        skipComplaint: skipComplaints.length,
       },
     };
   }

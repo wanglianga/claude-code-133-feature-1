@@ -7,6 +7,7 @@ import { StationsModule } from './stations/stations.module';
 import { DispatchModule } from './dispatch/dispatch.module';
 import { ServiceModule } from './service/service.module';
 import { OpsModule } from './ops/ops.module';
+import { SkipRecordsModule } from './skip-records/skip-records.module';
 import { SeedService } from './seed.service';
 
 function dbConfig() {
@@ -43,6 +44,7 @@ function dbConfig() {
     DispatchModule,
     ServiceModule,
     OpsModule,
+    SkipRecordsModule,
   ],
   providers: [SeedService],
 })

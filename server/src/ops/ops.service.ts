@@ -36,7 +36,8 @@ export class OpsService {
       const waits = boarded.map(e => e.waitSeconds).filter(w => w >= 0);
       const avg = waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : 0;
       const max = waits.length ? Math.max(...waits) : 0;
-      const skipped = es.filter(e => e.status === 'skipped').length;
+      const skipped = es.filter(e => e.skipRecordId).length; // 曾被满载跳站的组数（转回排队后仍计入）
+      const stranded = es.filter(e => e.status === 'skipped').length; // 当前仍滞留
       return {
         stationId: s.id, stationName: s.name, isHot: s.isHot,
         queueGroups: es.length,
@@ -44,6 +45,7 @@ export class OpsService {
         avgWaitSeconds: avg,
         maxWaitSeconds: max,
         skippedGroups: skipped,
+        strandedGroups: stranded,
       };
     }).sort((a, b) => b.avgWaitSeconds - a.avgWaitSeconds);
 

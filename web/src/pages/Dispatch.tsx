@@ -4,10 +4,11 @@ import {
   Input, InputNumber, message, Tabs, Badge, Popconfirm, Typography,
 } from 'antd';
 import {
-  CloudServerOutlined, ThunderboltOutlined, WarningOutlined,
+  CloudServerOutlined, ThunderboltOutlined, WarningOutlined, CarOutlined,
 } from '@ant-design/icons';
 import { api, TRIP_STATUS } from '../api';
 import { useApi } from '../hooks';
+import { SkipRecordTimeline, complaintTag, skipStatusTag } from '../components/SkipShared';
 
 export default function DispatchPage() {
   const [tick, setTick] = useState(0);
@@ -64,6 +65,10 @@ export default function DispatchPage() {
       <Tabs
         items={[
           { key: 'board', label: '站点与车辆', children: <BoardTab dash={dash} loading={loading} geo={geo} refresh={refresh} /> },
+          { key: 'skip',
+            label: <Badge count={dash?.skipRecords?.filter((r: any) => !r.dispatchReviewedAt).length || 0}
+              offset={[10, -2]} size="small">满载跳站处置</Badge>,
+            children: <SkipTab dash={dash} refresh={refresh} /> },
           { key: 'dispatch', label: '派班发车', children: <DispatchTab dash={dash} refresh={refresh} /> },
           { key: 'charter', label: '团队包车', children: <CharterTab dash={dash} refresh={refresh} /> },
           { key: 'weather', label: '天气与道路管制', children: <WeatherTab dash={dash} refresh={refresh} /> },
@@ -447,4 +452,162 @@ function AddControl({ stations, onDone }: { stations: any[]; onDone: () => void 
 
 function vehicleStatus(s: string) {
   return ({ idle: '待命', running: '在运', charging: '充电', maintenance: '维保', breakdown: '故障' } as any)[s] || s;
+}
+
+/* ---------- 满载跳站处置（调度中心：查看同一条记录/增派空车/留座规则/主管复核） ---------- */
+
+function SkipTab({ dash, refresh }: any) {
+  const records: any[] = dash?.skipRecords || [];
+  const [detailFor, setDetailFor] = useState<any>(null);
+  const [extraFor, setExtraFor] = useState<any>(null);
+
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Alert type="info" showIcon
+        message="跳站记录会影响该站点下一轮调度：可临时增派空车直达接驳，或启用「车辆不满载离站」规则（为本站预留座位，上游检票链路自动锁定，杜绝再次满载越站）。处置须经站点负责人确认后，由调度主管复核。" />
+      <Card title={<Space><WarningOutlined style={{ color: '#cf1322' }} />满载跳站记录（与站务/游客/客服共用同一记录）</Space>}>
+        <Table rowKey="id" size="small" pagination={{ pageSize: 8 }} dataSource={records}
+          locale={{ emptyText: '当前没有未闭环的满载跳站记录' }}
+          columns={[
+            { title: '编号', dataIndex: 'code', width: 130 },
+            { title: '站点', key: 'st', render: (_: any, r: any) =>
+              <Space direction="vertical" size={0}><b>{r.stationName}</b><span className="muted">{r.routeName}</span></Space> },
+            { title: '跳站班次/车', key: 't', render: (_: any, r: any) =>
+              <Space size={4}>{r.tripCode}<Tag>{r.vehicleCode}</Tag></Space> },
+            { title: '车内人数', key: 'on', width: 90, render: (_: any, r: any) =>
+              <Tag color="red">{r.onboardCount}/{r.capacity}</Tag> },
+            { title: '滞留', key: 'w', width: 90, render: (_: any, r: any) => `${r.waitingGroups}组/${r.waitingPeople}人` },
+            { title: '下一班预计', key: 'eta', width: 150, render: (_: any, r: any) =>
+              <Space direction="vertical" size={0}>
+                <b>{r.nextTripCode || '按计划间隔'}</b>
+                <Tag color="orange">约 {r.nextEtaMinutes} 分钟</Tag>
+              </Space> },
+            { title: '状态/投诉', key: 's', width: 150, render: (_: any, r: any) =>
+              <Space direction="vertical" size={2}>{skipStatusTag(r.status)}{complaintTag(r.complaintStatus)}</Space> },
+            {
+              title: '调度处置', key: 'op', width: 300,
+              render: (_: any, r: any) => (
+                <Space wrap>
+                  <Button size="small" type="primary" disabled={!!r.reliefTripId}
+                    onClick={() => setExtraFor(r)}>
+                    {r.reliefTripId ? `已派 ${r.reliefTripCode}` : '临时增派空车'}
+                  </Button>
+                  <Button size="small" onClick={() => reserveModal(r, refresh)}>
+                    {r.seatReserveSet > 0 ? `留座${r.seatReserveSet}·调整` : '设留座规则'}
+                  </Button>
+                  <Button size="small" ghost type="primary" disabled={!!r.dispatchReviewedAt}
+                    onClick={() => reviewModal(r, refresh)}>主管复核</Button>
+                  <Button size="small" type="link" onClick={() => setDetailFor(r)}>时间线</Button>
+                </Space>
+              ),
+            },
+          ]} />
+      </Card>
+
+      {records.filter(r => r.dispatchAction).length > 0 && (
+        <Card title="已下发的调度处置">
+          {records.filter(r => r.dispatchAction).map(r => (
+            <div key={`a-${r.id}`} style={{ padding: '4px 0' }}>
+                <Tag color="blue">{r.code}</Tag>{r.dispatchAction}
+                {r.dispatchSupervisorNote && <span className="muted">｜主管复核：{r.dispatchSupervisorNote}</span>}
+            </div>
+          ))}
+        </Card>
+      )}
+
+      {detailFor && (
+        <Modal open title={`${detailFor.code} 跳站处理时间线`} footer={null} width={660}
+          onCancel={() => setDetailFor(null)}>
+          <div style={{ marginBottom: 8 }}>
+            <b>跳站原因：</b>{detailFor.reason}
+          </div>
+          <SkipRecordTimeline rec={detailFor} />
+        </Modal>
+      )}
+      <ExtraVehicleModal rec={extraFor} dash={dash} onClose={() => setExtraFor(null)}
+        onDone={() => { setExtraFor(null); refresh(); }} />
+    </Space>
+  );
+}
+
+function reserveModal(r: any, refresh: () => void) {
+  let seats = r.seatReserveSet || 2;
+  Modal.confirm({
+    title: `调整车辆不满载离站规则：${r.stationName}`,
+    width: 560,
+    content: (
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Space>
+          为本站预留座位
+          <InputNumber id="rv-seats" min={0} max={20} defaultValue={seats}
+            onChange={v => { seats = v || 0; }} /> 个
+        </Space>
+        <Input.TextArea id="rv-note" rows={2} placeholder="备注（可选）" />
+        <span className="muted">设置后，途经本站的后续车辆在上游站检票时自动锁定该座位数，不得卖满；设为 0 解除规则。</span>
+      </Space>
+    ),
+    onOk: async () => {
+      const note = (document.getElementById('rv-note') as HTMLTextAreaElement)?.value || '';
+      await api.post(`/skip-records/${r.id}/seat-reserve`, { seats, note });
+      message.success(seats === 0 ? '留座规则已解除' : `已设置留座 ${seats} 座`);
+      refresh();
+    },
+  });
+}
+
+function reviewModal(r: any, refresh: () => void) {
+  if (!r.stationConfirmedAt) {
+    message.warning('须先由站点负责人确认跳站情况，调度主管才能复核');
+    return;
+  }
+  Modal.confirm({
+    title: `调度主管复核：${r.code}（${r.stationName}）`,
+    width: 560,
+    content: <Input.TextArea id="rv-review" rows={3}
+      defaultValue="复核通过：跳站原因、游客补偿与调度处置（增派空车/留座规则）均已落实" />,
+    onOk: async () => {
+      const note = (document.getElementById('rv-review') as HTMLTextAreaElement)?.value || '';
+      await api.post(`/skip-records/${r.id}/dispatch-review`, { reviewerName: '调度主管', note });
+      message.success('复核完成（无未决投诉时记录自动闭环）');
+      refresh();
+    },
+  });
+}
+
+function ExtraVehicleModal({ rec, dash, onClose, onDone }: any) {
+  const idleVehicles = (dash?.vehicles || []).filter((v: any) =>
+    v.status === 'idle' && !v.reservedForCharter && v.battery >= 20);
+  const freeDrivers = (dash?.drivers || []).filter((d: any) =>
+    ['on_duty'].includes(d.status) && !d.restRequired);
+  const [vehicleId, setVehicleId] = useState<number>();
+  const [driverId, setDriverId] = useState<number>();
+  const [note, setNote] = useState('');
+  if (!rec) return null;
+  return (
+    <Modal open={!!rec} title={`临时增派空车接驳：${rec.stationName}（${rec.code}）`}
+      onCancel={onClose} width={560}
+      onOk={async () => {
+        if (!vehicleId || !driverId) return message.warning('请选择车辆与司机');
+        try {
+          const r = await api.post(`/skip-records/${rec.id}/dispatch-extra-vehicle`, { vehicleId, driverId, note });
+          message.success(`已增派 ${r.reliefTripCode} 空车前往，滞留游客自动转回排队`);
+          onDone();
+        } catch (e: any) { message.error(e.message); }
+      }}>
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Alert type="warning" showIcon
+          message={`空车将以「${rec.stationName}」为起点立即开始上客，滞留 ${rec.waitingPeople} 人自动转回排队优先检票；仅可派待命、电量≥20%、非包车预留车辆。`} />
+        <Select style={{ width: '100%' }} placeholder="选择空车" value={vehicleId} onChange={setVehicleId}
+          options={idleVehicles.map((v: any) => ({
+            value: v.id,
+            label: `${v.code} ${v.capacity}座 ♿${v.wheelchairSeats} 电量${v.battery}%`,
+          }))} />
+        <Select style={{ width: '100%' }} placeholder="选择司机" value={driverId} onChange={setDriverId}
+          options={freeDrivers.map((d: any) => ({
+            value: d.id, label: `${d.name}（工时 ${d.workMinutesToday}/${d.maxWorkMinutes} 分）`,
+          }))} />
+        <Input.TextArea rows={2} value={note} onChange={e => setNote(e.target.value)} placeholder="调度备注（可选）" />
+      </Space>
+    </Modal>
+  );
 }

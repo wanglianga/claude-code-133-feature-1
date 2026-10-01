@@ -180,8 +180,15 @@ function TripPanel({ trip, onEvent }: { trip: any; onEvent: () => void }) {
             const r = await api.post(`/trips/${trip.id}/arrive`, { stationId: sid });
             if (r.skipped) {
               Modal.warning({
-                title: '车辆满载，已自动跳站',
-                content: `本站 ${r.waitingGroups} 组游客未能上车，事件已同步调度加车，站台已自动广播`,
+                title: '车辆满载，已自动跳站并生成解释记录',
+                width: 520,
+                content: (
+                  <Space direction="vertical" style={{ marginTop: 8 }}>
+                    <div>跳站记录 <b>{r.skipRecordCode}</b>：本站 {r.waitingGroups} 组游客未能上车，已转回候乘。</div>
+                    <div>{r.nextTripCode ? `下一班 ${r.nextTripCode}` : '下一班按计划间隔'} 预计 <b style={{ color: '#cf1322' }}>{r.nextEtaMinutes} 分钟</b> 到达本站。</div>
+                    <div className="muted">游客端已推送等待补偿与换乘建议，站点负责人将确认、调度主管复核；如需调度增派空车请等待调度处置。</div>
+                  </Space>
+                ),
               });
             } else {
               message.success(`已到站：余 ${r.seatsLeft} 座，轮椅位 ${r.wheelchairLeft}，站台 ${r.waitingPeople || 0} 人等候`);

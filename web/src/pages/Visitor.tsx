@@ -5,6 +5,7 @@ import {
 } from 'antd';
 import { api, fen, TICKET_TYPE, TICKET_STATUS } from '../api';
 import { useAction, useApi } from '../hooks';
+import { EtaText, SkipRecordTimeline, complaintTag, skipStatusTag } from '../components/SkipShared';
 
 export default function VisitorPage() {
   const { data: routesData } = useApi<any[]>('/routes');
@@ -143,7 +144,7 @@ function RefundForm({ setValues }: { setValues?: (v: any) => void }) {
 }
 
 function TicketDetail({ detail, onRefund, onChanged }: { detail: any; onRefund: () => void; onChanged: () => void }) {
-  const { ticket, origin, dest, incidents, typeLabel } = detail;
+  const { ticket, origin, dest, incidents, typeLabel, skipRecords = [] } = detail;
   const st = TICKET_STATUS[ticket.status];
   const canRefund = ['valid', 'queued'].includes(ticket.status);
 
@@ -177,6 +178,53 @@ function TicketDetail({ detail, onRefund, onChanged }: { detail: any; onRefund: 
           <Typography.Text type="secondary"> ｜路线：{ticket.plannedRoute}</Typography.Text>
         </Descriptions.Item>
       </Descriptions>
+
+      {skipRecords.length > 0 && (
+        <>
+          <Divider orientation="left" style={{ fontSize: 13 }}>满载跳站说明（为什么没停 · 车内人数 · 下一班何时到 · 等待补偿/换乘建议）</Divider>
+          <Space direction="vertical" style={{ width: '100%' }} size={10}>
+            {skipRecords.map((r: any) => (
+              <Alert
+                key={r.id}
+                type={r.status === 'closed' ? 'info' : 'warning'}
+                showIcon
+                message={
+                  <Space wrap>
+                    <b>{r.code} · {r.stationName}</b>
+                    {skipStatusTag(r.status)}
+                    {complaintTag(r.complaintStatus)}
+                  </Space>
+                }
+                description={
+                  <Space direction="vertical" size={6} style={{ width: '100%' }}>
+                    <div><b>为什么跳站：</b>{r.reason}</div>
+                    <div><b>跳站时车内人数：</b>
+                      <Tag color="red">{r.onboardCount} / {r.capacity} 人（已满载）</Tag>
+                    </div>
+                    <div><b>下一班预计到达：</b><EtaText rec={r} /></div>
+                    <div><b>站点等候安排：</b>{r.waitingPolicy}</div>
+                    <div><b>🎁 等待补偿：</b>{r.compensation}</div>
+                    <div><b>🚶 换乘建议：</b>{r.transferAdvice}</div>
+                    {r.dispatchAction && <div style={{ color: '#1677ff' }}><b>调度处置：</b>{r.dispatchAction}</div>}
+                    {r.complaintStatus === 'closed' && r.complaintNote &&
+                      <div style={{ color: '#389e0d' }}><b>客服回复：</b>{r.complaintNote}（{new Date(r.complaintHandledAt!).toLocaleString('zh-CN')}）</div>}
+                    <Space wrap>
+                      {r.complaintStatus === 'none' && (
+                        <Button size="small" danger onClick={() => complaintModal(r, ticket, onChanged)}>
+                          对本次跳站有疑问 / 投诉
+                        </Button>
+                      )}
+                      {r.complaintStatus === 'open' && <Tag color="red">投诉已提交，客服正在处理</Tag>}
+                      <Button size="small" type="link" onClick={() => skipTimelineModal(r)}>查看处理时间线</Button>
+                    </Space>
+                  </Space>
+                }
+              />
+            ))}
+          </Space>
+        </>
+      )}
+
       <Divider orientation="left" style={{ fontSize: 13 }}>事件时间线（游客 / 站务 / 司机 / 调度 / 客服 / 财务）</Divider>
       <Timeline
         items={incidents.flatMap((inc: any) => {
@@ -200,6 +248,33 @@ function TicketDetail({ detail, onRefund, onChanged }: { detail: any; onRefund: 
       </Space>
     </div>
   );
+}
+
+function complaintModal(r: any, ticket: any, onChanged: () => void) {
+  Modal.confirm({
+    title: `就跳站 ${r.code} 向客服咨询/投诉`,
+    width: 520,
+    content: (
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Alert type="info" showIcon
+          message={`提交后客服将基于同一条跳站记录（车内 ${r.onboardCount}/${r.capacity} 人、下一班 ${r.nextTripCode || '按计划'} 约 ${r.nextEtaMinutes} 分钟）为您处理，并在此页回复。`} />
+        <Input.TextArea id="sk-complaint" rows={3} defaultValue="等待时间较长，希望了解补偿安排" />
+      </Space>
+    ),
+    onOk: async () => {
+      const note = (document.getElementById('sk-complaint') as HTMLTextAreaElement)?.value || '游客咨询跳站补偿';
+      await api.post(`/skip-records/${r.id}/complaint`, { ticketId: ticket.id, visitorName: ticket.visitorName, note });
+      onChanged();
+    },
+  });
+}
+
+function skipTimelineModal(r: any) {
+  Modal.info({
+    title: `${r.code} 跳站处理时间线`,
+    width: 600,
+    content: <SkipRecordTimeline rec={r} />,
+  });
 }
 
 function roleName(r: string) {

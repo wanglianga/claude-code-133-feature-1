@@ -3,7 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import {
   RouteLine, Station, Vehicle, Driver, Weather, Ticket, QueueEntry,
-  RoadControl, Trip,
+  RoadControl, Trip, SkipRecord, Incident,
 } from './entities';
 import { now, seqCode, ticketPrice } from './common';
 
@@ -19,6 +19,8 @@ export class SeedService implements OnApplicationBootstrap {
     @InjectRepository(QueueEntry) private readonly queue: Repository<QueueEntry>,
     @InjectRepository(RoadControl) private readonly controls: Repository<RoadControl>,
     @InjectRepository(Trip) private readonly trips: Repository<Trip>,
+    @InjectRepository(SkipRecord) private readonly skipRecords: Repository<SkipRecord>,
+    @InjectRepository(Incident) private readonly incidents: Repository<Incident>,
   ) {}
 
   async onApplicationBootstrap() {
@@ -215,7 +217,89 @@ export class SeedService implements OnApplicationBootstrap {
     t6.status = 'queued';
     await this.tickets.save(t6);
 
+    /* ---- 满载跳站解释记录样例（山顶观景台，等待站点负责人确认/调度主管复核） ---- */
+    // 一列已完班的跳站班车（V03 上行满载越过山顶观景台）
+    const skipTrip = await this.trips.save(this.trips.create({
+      code: seqCode('TR'),
+      routeId: loop.id, vehicleId: vehicles[2].id, driverId: drivers[0].id,
+      direction: 'forward', status: 'completed',
+      originStationId: loopStations[0].id, destStationId: loopStations[3].id,
+      departAt: new Date(Date.now() - 18 * 60000).toISOString(),
+      arriveAt: new Date(Date.now() - 2 * 60000).toISOString(),
+      seatsTotal: 10, seatsSold: 10, wheelchairHeld: 1, boardedCount: 10,
+      skippedStations: [loopStations[2].id],
+      reservedForStations: [],
+    }));
+
+    const t7 = await mkTicket({
+      visitorName: '林晚秋', type: 'single', partySize: 2,
+      originStationId: loopStations[2].id, destStationId: loopStations[3].id,
+      plannedRoute: '山顶观景台 → 玻璃栈道',
+      price: ticketPrice('single', 2),
+    });
+    const t8 = await mkTicket({
+      visitorName: '陈大爷（轮椅）', type: 'accessible_priority', partySize: 1,
+      originStationId: loopStations[2].id, destStationId: loopStations[3].id,
+      hasElder: true, priority: true, needWheelchair: true,
+      price: ticketPrice('accessible_priority', 1),
+    });
+
+    const skipEtaMinutes = 9;
+    const skipRecord = await this.skipRecords.save(this.skipRecords.create({
+      code: seqCode('SR'),
+      stationId: loopStations[2].id, tripId: skipTrip.id, vehicleId: vehicles[2].id,
+      reason: '车辆到达山顶观景台时座位余量为 0（10/10 满载），含 1 个轮椅位占用，按调度规则越站通过',
+      onboardCount: 10, capacity: 10, waitingGroups: 2, waitingPeople: 3,
+      nextTripCode: trip.code, nextEtaMinutes: skipEtaMinutes,
+      nextEtaAt: new Date(Date.now() + skipEtaMinutes * 60000).toISOString(),
+      compensation: `候车预计约 ${skipEtaMinutes} 分钟：每位等候游客发放矿泉水 1 瓶/候车小礼品；山顶站湿冷，站务已将游客引导至观景廊道避风等候；不愿继续等候者可由站务引导全额退票或改签当日后续班次`,
+      transferAdvice: '赶时间的游客可步行约 8 分钟下行至「百花园」站乘坐后续上行班次；轮椅游客陈大爷请在原地无障碍通道等候，下一班 V02 配 2 个轮椅位',
+      waitingPolicy: '原地等候下一班 V02（约 9 分钟），优先组仍按「优先组优先 + 同组 FIFO」叫号；陈大爷一家优先；站务已广播两次',
+      complaintStatus: 'none',
+      status: 'recorded',
+      timeline: [
+        { at: new Date(Date.now() - 6 * 60000).toISOString(), role: 'system',
+          text: `电子围栏识别 ${vehicles[2].code} 到站满载（车内 10/10 人），自动登记跳站；2 组/3 人未能上车` },
+      ],
+      createdAt: new Date(Date.now() - 6 * 60000).toISOString(),
+    }));
+
+    // 林晚秋已被站务重新转回候乘；陈大爷仍在滞留状态，站务可一键转回
+    await this.queue.save(this.queue.create({
+      stationId: loopStations[2].id, ticketId: t7.id, partySize: 2,
+      priority: false, expectedDirection: 'forward', status: 'waiting',
+      enqueueAt: new Date(Date.now() - 12 * 60000).toISOString(),
+      skipRecordId: skipRecord.id,
+    }));
+    t7.status = 'queued';
+    await this.tickets.save(t7);
+    await this.queue.save(this.queue.create({
+      stationId: loopStations[2].id, ticketId: t8.id, partySize: 1,
+      priority: true, expectedDirection: 'forward', status: 'skipped',
+      enqueueAt: new Date(Date.now() - 11 * 60000).toISOString(),
+      skipRecordId: skipRecord.id,
+    }));
+    t8.status = 'queued';
+    await this.tickets.save(t8);
+
+    const skipIncident = await this.incidents.save(this.incidents.create({
+      code: seqCode('IN'),
+      type: 'skip_station', severity: 'critical',
+      title: `满载跳站：${skipTrip.code} 越过 山顶观景台`,
+      detail: `跳站记录 ${skipRecord.code}：车内 10/10 人满载，站台 3 人等待；下一班 ${trip.code} 预计 ${skipEtaMinutes} 分钟到达`,
+      tripId: skipTrip.id, stationId: loopStations[2].id, vehicleId: vehicles[2].id,
+      skipRecordId: skipRecord.id,
+      raisedByRole: 'system', ownerRole: 'dispatch', status: 'open',
+      timeline: [
+        { at: new Date(Date.now() - 6 * 60000).toISOString(), role: 'system',
+          text: `已生成跳站解释记录 ${skipRecord.code}` },
+      ],
+      createdAt: new Date(Date.now() - 6 * 60000).toISOString(),
+    }));
+    skipRecord.incidentId = skipIncident.id;
+    await this.skipRecords.save(skipRecord);
+
     // eslint-disable-next-line no-console
-    console.log('[seed] 演示数据已写入：2 条线路 / 10 个站点 / 6 辆车 / 4 名司机 / 6 张票');
+    console.log('[seed] 演示数据已写入：2 条线路 / 10 个站点 / 6 辆车 / 4 名司机 / 8 张票 / 1 条满载跳站记录');
   }
 }

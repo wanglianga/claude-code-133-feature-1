@@ -1,0 +1,38 @@
+# 云顶山景区观光车排队上车与站点调度平台 —— 一键启动
+# 使用：
+#   docker compose up --build
+# 然后浏览器打开 http://localhost:8080
+# 重置演示数据：
+#   docker compose down && docker volume rm 133-feature-1-b_server-data
+services:
+  server:
+    build: ./server
+    container_name: scenic-shuttle-server
+    environment:
+      PORT: "3001"
+      # 默认 SQLite，零外部依赖；数据持久化到命名卷
+      SQLITE_PATH: /app/data/app.sqlite
+      # 如需 MySQL，取消下面注释并提供 mysql 服务（或外部库）
+      # DB_TYPE: mysql
+      # DB_HOST: mysql
+      # DB_PORT: "3306"
+      # DB_USER: root
+      # DB_PASSWORD: root
+      # DB_NAME: scenic_shuttle
+    volumes:
+      - server-data:/app/data
+    ports:
+      - "3001:3001"
+    restart: unless-stopped
+
+  web:
+    build: ./web
+    container_name: scenic-shuttle-web
+    depends_on:
+      - server
+    ports:
+      - "8080:80"
+    restart: unless-stopped
+
+volumes:
+  server-data:

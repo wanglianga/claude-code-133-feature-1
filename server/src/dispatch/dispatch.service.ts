@@ -6,6 +6,7 @@ import {
   RoadControl, GeofenceEvent, SafetyCheck, CharterOrder,
 } from '../entities';
 import { IncidentsService } from '../incidents/incidents.service';
+import { SkipRecordsService } from '../skip-records/skip-records.service';
 import { now, seqCode, waitSeconds } from '../common';
 
 const MIN_BATTERY = 20;       // 低于 20% 禁止发车
@@ -30,6 +31,7 @@ export class DispatchService {
     @InjectRepository(SafetyCheck) private readonly checks: Repository<SafetyCheck>,
     @InjectRepository(CharterOrder) private readonly charters: Repository<CharterOrder>,
     private readonly incidentSvc: IncidentsService,
+    private readonly skipRecords: SkipRecordsService,
   ) {}
 
   /* ================= 调度看板 ================= */
@@ -62,7 +64,16 @@ export class DispatchService {
       return { ...v, driverName: driver?.name || null, driver: driver || null, activeTrip: trip };
     });
 
-    const suggestions = this.buildSuggestions(vehicleCards, drivers, stationCards, weatherRow[0], controls);
+    const suggestions = await this.buildSuggestions(vehicleCards, drivers, stationCards, weatherRow[0], controls);
+    const openSkipRecords = await this.skipRecords.openRecords();
+    for (const r of openSkipRecords) {
+      if (!r.dispatchHandledAt) {
+        suggestions.unshift({
+          level: 'critical',
+          text: `${r.stationName} 满载跳站（${r.code}）：车内 ${r.onboardCount}/${r.capacity} 人、滞留 ${r.waitingPeople} 人，下一班 ${r.nextTripCode || '按计划间隔'} 约 ${r.nextEtaMinutes} 分钟到——可临时增派空车或设置留座规则`,
+        });
+      }
+    }
 
     return {
       weather: weatherRow[0] || null,
@@ -73,10 +84,11 @@ export class DispatchService {
       trips: await this.decorateTrips(trips),
       charters,
       suggestions,
+      skipRecords: openSkipRecords,
     };
   }
 
-  private buildSuggestions(vehicles: any[], drivers: Driver[], stations: any[], weather: Weather | undefined, controls: RoadControl[]) {
+  private async buildSuggestions(vehicles: any[], drivers: Driver[], stations: any[], weather: Weather | undefined, controls: RoadControl[]) {
     const out: { level: 'warn' | 'critical'; text: string }[] = [];
     for (const s of stations) {
       if (s.congestion === 'overloaded') {
@@ -106,7 +118,7 @@ export class DispatchService {
       out.push({ level: 'critical', text: `${weather.warning}，全线暂停发车，在班车就近折返/停运` });
     }
     for (const c of controls) {
-      out.push({ level: c.reason.includes('封闭') ? 'critical' : 'warn', text: `道路管制：${c.segment}（${c.reason}），派班需绕行或改区间` });
+      out.push({ level: c.reason.includes('封闭') && !c.reason.includes('未封闭') ? 'critical' : 'warn', text: `道路管制：${c.segment}（${c.reason}），派班需绕行或改区间` });
     }
     return out;
   }
@@ -312,9 +324,10 @@ export class DispatchService {
     const check = await this.todayPassedCheck(v.id, d.id);
     if (!check) blockers.push('司机今日对该车的发车前安全检查未完成或未通过');
 
+    const isClosed = (reason: string) => reason.includes('封闭') && !reason.includes('未封闭');
     const activeControls = await this.controls.find({ where: { status: 'active' } });
     const blockingControl = activeControls.find(c =>
-      c.reason.includes('封闭') && (!c.stationId || c.stationId === origin.id || c.stationId === dest.id));
+      isClosed(c.reason) && (!c.stationId || c.stationId === origin.id || c.stationId === dest.id));
     if (blockingControl) blockers.push(`道路管制：${blockingControl.segment} 道路封闭`);
 
     const [weatherRow] = await this.weatherRepo.find({ order: { id: 'DESC' }, take: 1 });
@@ -411,24 +424,22 @@ export class DispatchService {
       return true;
     });
 
-    // 满载跳站
+    // 满载跳站：生成统一的跳站解释记录（原因/车内人数/下一班ETA/补偿/换乘建议）
     if (seatsLeft <= 0 && waiting.length > 0) {
       const skipped = trip.skippedStations || [];
-      if (!skipped.includes(stationId)) skipped.push(stationId);
-      trip.skippedStations = skipped;
-      await this.trips.save(trip);
-      for (const e of waiting) e.status = 'skipped';
-      await this.queue.save(waiting);
-      const people = waiting.reduce((a, e) => a + e.partySize, 0);
-      await this.incidentSvc.create({
-        type: 'skip_station', severity: 'critical',
-        title: `满载跳站：${trip.code} 越过 ${station.name}`,
-        detail: `车上 ${trip.seatsSold}/${vehicle.capacity} 人已满载，站台 ${people} 人未能上车，已通知调度加车并向站台广播`,
-        tripId: trip.id, stationId, vehicleId: vehicle.id,
-        raisedByRole: 'system', ownerRole: 'dispatch',
-        firstNote: `电子围栏识别到站，座位余量 0，自动登记跳站；${waiting.length} 组游客转回排队`,
-      });
-      return { arrived: true, skipped: true, seatsLeft: 0, waitingGroups: waiting.length };
+      if (!skipped.includes(stationId)) {
+        skipped.push(stationId);
+        trip.skippedStations = skipped;
+        await this.trips.save(trip);
+      }
+      const rec = await this.skipRecords.recordFromArrival({ trip, vehicle, station, waiting });
+      return {
+        arrived: true, skipped: true, seatsLeft: 0,
+        waitingGroups: waiting.length,
+        skipRecordId: rec.id, skipRecordCode: rec.code,
+        nextTripCode: rec.nextTripCode, nextEtaMinutes: rec.nextEtaMinutes,
+        compensation: rec.compensation, transferAdvice: rec.transferAdvice,
+      };
     }
 
     // 非满载：把之前跳站状态仍在本站的游客转回等候

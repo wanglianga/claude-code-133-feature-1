@@ -4,10 +4,11 @@ import {
   Alert, Badge, Typography, message, Empty, Tooltip,
 } from 'antd';
 import {
-  CloudOutlined, SoundOutlined, ReloadOutlined, WarningOutlined,
+  CloudOutlined, SoundOutlined, ReloadOutlined, WarningOutlined, CarOutlined,
 } from '@ant-design/icons';
 import { api, TICKET_TYPE, TRIP_STATUS, waitText } from '../api';
 import { useApi } from '../hooks';
+import { EtaText, SkipRecordTimeline, skipStatusTag } from '../components/SkipShared';
 
 export default function StaffPage() {
   const { data: overview } = useApi<any>('/overview');
@@ -180,6 +181,12 @@ export default function StaffPage() {
           {board.flowLimitPerHour > 0 && (
             <Alert type="info" showIcon message={`本站景点限流 ${board.flowLimitPerHour} 人/小时，注意控制放行节奏`} />
           )}
+          {board.seatReserve > 0 && (
+            <Alert type="warning" showIcon
+              message={`不满载离站规则生效中：后续车辆为本站预留 ${board.seatReserve} 个座位，上游站检票自动锁定，车到本站保证有余座`} />
+          )}
+
+          <StationSkipCard board={board} refresh={refresh} />
 
           <Card title="游客扫码入队" extra={<span className="muted">仅本站票面始发站可入队，系统自动校验方向</span>}>
             <Space style={{ width: '100%' }}>
@@ -226,12 +233,16 @@ export default function StaffPage() {
                 {
                   title: '座位余量', key: 'seats',
                   render: (_: any, r: any) => (
-                    <Space>
-                      <div className="bar-wrap" style={{ width: 130 }}>
-                        <div className="bar-track"><div className={`bar-fill ${r.seatsLeft <= 3 ? 'red' : ''}`}
-                          style={{ width: `${r.seatsTotal ? Math.round((r.seatsSold / r.seatsTotal) * 100) : 0}%` }} /></div>
-                      </div>
-                      <b style={{ color: r.seatsLeft <= 3 ? '#cf1322' : undefined }}>{r.seatsLeft}</b>/{r.seatsTotal}
+                    <Space direction="vertical" size={0}>
+                      <Space>
+                        <div className="bar-wrap" style={{ width: 130 }}>
+                          <div className="bar-track"><div className={`bar-fill ${r.seatsLeft <= 3 ? 'red' : ''}`}
+                            style={{ width: `${r.seatsTotal ? Math.round((r.seatsSold / r.seatsTotal) * 100) : 0}%` }} /></div>
+                        </div>
+                        <b style={{ color: r.seatsLeft <= 3 ? '#cf1322' : undefined }}>{r.seatsLeft}</b>/{r.seatsTotal}
+                      </Space>
+                      {r.downstreamReserve > 0 &&
+                        <Tag color="orange" style={{ marginTop: 2 }}>为下游站留座 {r.downstreamReserve}，本站可售 {r.sellable}</Tag>}
                     </Space>
                   ),
                 },
@@ -290,6 +301,137 @@ function BroadcastModal({ open, stationId, onClose, onDone }:
           options={[{ value: 'station', label: '仅本站' }, { value: 'all', label: '全线广播' }]} />
         <Input.TextArea rows={3} value={text} onChange={e => setText(e.target.value)}
           placeholder="如：下一班上行观光车约 3 分钟后进站，轮椅游客请在优先通道等候" />
+      </Space>
+    </Modal>
+  );
+}
+
+/* ---------- 满载跳站解释记录（站点端：确认/转回排队/同步等候策略） ---------- */
+
+function StationSkipCard({ board, refresh }: { board: any; refresh: () => void }) {
+  const records: any[] = board?.skipRecords || [];
+  const [detailFor, setDetailFor] = useState<any>(null);
+  const [manualOpen, setManualOpen] = useState(false);
+  if (!board) return null;
+
+  return (
+    <Card
+      title={<Space><WarningOutlined style={{ color: '#cf1322' }} />满载跳站解释与等候策略（与调度/游客/客服同一条记录）
+        <Badge count={records.length} color="#cf1322" /></Space>}
+      extra={<Button size="small" icon={<CarOutlined />} onClick={() => setManualOpen(true)}>站务补录跳站</Button>}>
+      {records.length === 0 ? (
+        <Empty description="本站暂无未闭环的满载跳站记录" />
+      ) : (
+        <Space direction="vertical" style={{ width: '100%' }} size={12}>
+          {records.map(r => (
+            <Alert
+              key={r.id}
+              type={r.stationConfirmedAt ? 'info' : 'error'}
+              showIcon
+              message={
+                <Space wrap>
+                  <b>{r.code}</b>
+                  {skipStatusTag(r.status)}
+                  <Tag>{r.vehicleCode} 跳站</Tag>
+                  <Tag color="red">车内 {r.onboardCount}/{r.capacity} 人满载</Tag>
+                  <Tag>滞留 {r.waitingGroups} 组 / {r.waitingPeople} 人</Tag>
+                  <EtaText rec={r} />
+                </Space>
+              }
+              description={
+                <Space direction="vertical" style={{ width: '100%' }} size={6}>
+                  <div><b>跳站原因：</b>{r.reason}</div>
+                  <div><b>等候策略（游客端同步）：</b>{r.waitingPolicy}</div>
+                  <div><b>等待补偿：</b>{r.compensation}</div>
+                  <div><b>换乘建议：</b>{r.transferAdvice}</div>
+                  {r.stationConfirmedAt && (
+                    <div className="muted">站点负责人 {r.stationConfirmedBy} 已于 {new Date(r.stationConfirmedAt).toLocaleString('zh-CN')} 确认：{r.stationManagerNote}</div>
+                  )}
+                  <Space wrap>
+                    {!r.stationConfirmedAt && (
+                      <Button size="small" type="primary" danger onClick={() => confirmModal(r, refresh)}>站点负责人确认</Button>
+                    )}
+                    {r.affectedGroups.some((g: any) => g.queueStatus === 'skipped') && (
+                      <Button size="small" onClick={async () => {
+                        const res = await api.post(`/skip-records/${r.id}/requeue`, {});
+                        message.success(`已把 ${res.requeued} 组滞留游客转回候乘队列`); refresh();
+                      }}>滞留组转回排队</Button>
+                    )}
+                    <Button size="small" ghost onClick={() => policyModal(r, refresh)}>同步等候策略</Button>
+                    <Button size="small" type="link" onClick={() => setDetailFor(r)}>完整时间线</Button>
+                  </Space>
+                </Space>
+              }
+            />
+          ))}
+        </Space>
+      )}
+
+      {detailFor && (
+        <Modal open title={`${detailFor.code} 跳站处理时间线`} footer={null} width={640}
+          onCancel={() => setDetailFor(null)}>
+          <SkipRecordTimeline rec={detailFor} />
+        </Modal>
+      )}
+      <ManualSkipModal open={manualOpen} board={board} onClose={() => setManualOpen(false)}
+        onDone={() => { setManualOpen(false); refresh(); }} />
+    </Card>
+  );
+}
+
+function confirmModal(r: any, refresh: () => void) {
+  Modal.confirm({
+    title: `站点负责人确认跳站记录 ${r.code}`,
+    width: 560,
+    content: (
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Input id="sk-manager" addonBefore="负责人" defaultValue="站点负责人" />
+        <Input.TextArea id="sk-note" rows={3} defaultValue="情况属实：车辆满载越站，已按等候策略安抚滞留游客并广播" />
+      </Space>
+    ),
+    onOk: async () => {
+      const managerName = (document.getElementById('sk-manager') as HTMLInputElement)?.value || '站点负责人';
+      const note = (document.getElementById('sk-note') as HTMLTextAreaElement)?.value || '';
+      await api.post(`/skip-records/${r.id}/station-confirm`, { managerName, note });
+      message.success('已确认，等待调度主管复核');
+      refresh();
+    },
+  });
+}
+
+function policyModal(r: any, refresh: () => void) {
+  let policy = r.waitingPolicy;
+  Modal.confirm({
+    title: `同步本站等候策略（${r.code}）`,
+    width: 560,
+    content: <Input.TextArea id="sk-policy" rows={3} defaultValue={policy}
+      onChange={e => { policy = e.target.value; }} />,
+    onOk: async () => {
+      await api.post(`/skip-records/${r.id}/waiting-policy`, { policy });
+      message.success('等候策略已同步至游客端与调度端');
+      refresh();
+    },
+  });
+}
+
+function ManualSkipModal({ open, board, onClose, onDone }: any) {
+  const [tripId, setTripId] = useState<number>();
+  const trips = (board?.trips || []).filter((t: any) => ['boarding', 'running', 'scheduled'].includes(t.status));
+  return (
+    <Modal open={open} title="站务补录满载跳站（电子围栏漏判时使用）" onCancel={onClose}
+      onOk={async () => {
+        if (!tripId) return message.warning('请选择跳站班次');
+        await api.post(`/skip-records/station/${board.station.id}/manual`, { tripId });
+        message.success('已补录跳站解释记录');
+        onDone();
+      }}>
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Select style={{ width: '100%' }} placeholder="选择满载越过本站的班次" value={tripId} onChange={setTripId}
+          options={trips.map((t: any) => ({
+            value: t.id,
+            label: `${t.code} ${t.vehicle?.code || ''} 余${t.seatsLeft}座`,
+          }))} />
+        <span className="muted">系统将自动记录车内人数、计算下一班预计到达并生成等待补偿/换乘建议</span>
       </Space>
     </Modal>
   );
