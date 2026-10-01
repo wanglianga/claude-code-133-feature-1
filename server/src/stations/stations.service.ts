@@ -3,9 +3,10 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import {
   Station, RouteLine, QueueEntry, Ticket, Trip, Vehicle, Weather,
-  Broadcast, RoadControl, Incident,
+  Broadcast, RoadControl, Incident, SkipRecord,
 } from '../entities';
 import { IncidentsService } from '../incidents/incidents.service';
+import { SkipService } from '../skip/skip.service';
 import { now, waitSeconds } from '../common';
 
 const LONG_QUEUE_RATIO = 1.2; // 排队人数超站台容量 1.2 倍判定过长
@@ -23,7 +24,9 @@ export class StationsService {
     @InjectRepository(Broadcast) private readonly broadcasts: Repository<Broadcast>,
     @InjectRepository(RoadControl) private readonly controls: Repository<RoadControl>,
     @InjectRepository(Incident) private readonly incidents: Repository<Incident>,
+    @InjectRepository(SkipRecord) private readonly skipRecords: Repository<SkipRecord>,
     private readonly incidentSvc: IncidentsService,
+    private readonly skipSvc: SkipService,
   ) {}
 
   /* ---------------- 线路 / 站点 / 天气 ---------------- */
@@ -128,6 +131,24 @@ export class StationsService {
       where: { stationId, status: 'boarded' },
     });
 
+    // 本站满载跳站解释记录（站点端执行等候策略、负责人确认）
+    const skipRows = await this.skipRecords.find({
+      where: { stationId }, order: { id: 'DESC' }, take: 20,
+    });
+    const skipTripRowsAll = skipRows.length
+      ? await this.trips.find({ where: { id: In(skipRows.map(r => r.tripId)) } }) : [];
+    const skipTripRows = skipRows.some(r => r.extraTripId)
+      ? await this.trips.find({ where: { id: In(skipRows.map(r => r.extraTripId!).filter(Boolean)) } }) : [];
+    const skipVehIds = [...new Set([...skipRows.map(r => r.vehicleId), ...skipTripRows.map(t => t.vehicleId)])];
+    const skipVehRows = skipVehIds.length ? await this.vehicles.find({ where: { id: In(skipVehIds) } }) : [];
+    const skipRecords = skipRows.map(r => ({
+      ...r,
+      tripCode: skipTripRowsAll.find(t => t.id === r.tripId)?.code || '',
+      vehicleCode: skipVehRows.find(v => v.id === r.vehicleId)?.code || `#${r.vehicleId}`,
+      extraTripCode: r.extraTripId ? (skipTripRows.find(t => t.id === r.extraTripId)?.code || '') : '',
+    }));
+    const openSkips = skipRecords.filter(r => r.status !== 'closed').length;
+
     return {
       station,
       route,
@@ -141,6 +162,8 @@ export class StationsService {
       broadcasts,
       checkedToday,
       flowLimitPerHour: station.flowLimitPerHour,
+      skipRecords,
+      openSkipCount: openSkips,
     };
   }
 
@@ -243,9 +266,13 @@ export class StationsService {
       );
     }
 
+    const reserveAhead = await this.skipSvc.reserveRequiredAhead(trip, entry.stationId);
     const seatsLeft = (vehicle?.capacity || trip.seatsTotal) - trip.seatsSold;
-    if (seatsLeft < entry.partySize) {
-      throw new BadRequestException(`本班座位不足：仅剩 ${seatsLeft} 座，游客一行 ${entry.partySize} 人`);
+    const boardableSeats = seatsLeft - reserveAhead;
+    if (boardableSeats < entry.partySize) {
+      throw new BadRequestException(reserveAhead > 0
+        ? `本班为下游调度预留站点保留 ${reserveAhead} 座：当前可用 ${boardableSeats} 座，游客一行 ${entry.partySize} 人，请等候下一班`
+        : `本班座位不足：仅剩 ${seatsLeft} 座，游客一行 ${entry.partySize} 人`);
     }
     if (ticket.needWheelchair) {
       const wLeft = (vehicle?.wheelchairSeats || 0) - trip.wheelchairHeld;
@@ -292,6 +319,8 @@ export class StationsService {
     const trip = await this.trips.findOne({ where: { id: tripId } });
     const vehicle = trip ? await this.vehicles.findOne({ where: { id: trip.vehicleId } }) : null;
     const seatsLeft = vehicle ? vehicle.capacity - (trip?.seatsSold || 0) : 0;
+    const reserveAhead = trip ? await this.skipSvc.reserveRequiredAhead(trip, stationId) : 0;
+    const boardableSeats = seatsLeft - reserveAhead;
 
     // 先排除方向不符
     for (const e of sorted) {
@@ -300,13 +329,15 @@ export class StationsService {
       const dirMismatch = trip && trip.direction !== 'loop' && ticket.expectedDirection !== 'loop'
         && trip.direction !== ticket.expectedDirection;
       if (dirMismatch) continue;
-      if (e.partySize > seatsLeft) continue;
+      if (e.partySize > boardableSeats) continue;
       if (ticket.needWheelchair && (vehicle.wheelchairSeats - trip.wheelchairHeld) < 1) continue;
       return this.boardEntry(e.id, tripId);
     }
     return {
       ok: false,
-      reason: seatsLeft === 0 ? '本班满载，剩余游客等候下一班' : '候乘队列中没有方向/座位匹配的游客',
+      reason: seatsLeft === 0 ? '本班满载，剩余游客等候下一班'
+        : reserveAhead > 0 ? `本班为下游预留站保留 ${reserveAhead} 座，本站剩余游客请等候下一班`
+        : '候乘队列中没有方向/座位匹配的游客',
       seatsLeft,
     };
   }

@@ -178,6 +178,11 @@ function TicketDetail({ detail, onRefund, onChanged }: { detail: any; onRefund: 
         </Descriptions.Item>
       </Descriptions>
       <Divider orientation="left" style={{ fontSize: 13 }}>事件时间线（游客 / 站务 / 司机 / 调度 / 客服 / 财务）</Divider>
+
+      {detail.skipRecords?.length > 0 && (
+        <SkipAlerts records={detail.skipRecords} onChanged={onChanged} />
+      )}
+
       <Timeline
         items={incidents.flatMap((inc: any) => {
           const notes = inc.timeline?.length ? inc.timeline : [{ at: inc.createdAt, role: inc.raisedByRole, text: inc.title }];
@@ -201,6 +206,80 @@ function TicketDetail({ detail, onRefund, onChanged }: { detail: any; onRefund: 
     </div>
   );
 }
+
+function SkipAlerts({ records, onChanged }: { records: any[]; onChanged: () => void }) {
+  const [showTransfer, setShowTransfer] = useState<number | null>(null);
+  return (
+    <Space direction="vertical" style={{ width: '100%', marginBottom: 8 }}>
+      {records.map((r: any) => (
+        <Alert
+          key={r.id}
+          type="error" showIcon
+          message={<Space wrap>
+            <b>您乘坐的上一班车在「{r.stationName}」满载跳站（{r.code}）</b>
+            {SKIP_STATUS[r.status]}
+            {r.confirmedBy && <Tag color="blue">站点负责人 {r.confirmedBy} 已确认</Tag>}
+            {r.reviewedBy && <Tag color="purple">调度主管 {r.reviewedBy} 已复核</Tag>}
+          </Space>}
+          description={
+            <Space direction="vertical" size={4} style={{ width: '100%' }}>
+              <div>跳站时车内 <b>{r.onboardCount}/{r.capacity}</b> 人（满载），站台 {r.platformPeople} 人未能上车；
+                下一班 <b>{r.nextVehicleCode}</b> 预计 <b>{r.nextEtaMinutes}</b> 分钟后（{new Date(r.nextEtaAt).toLocaleTimeString('zh-CN')}）到站。</div>
+              <div><Tag color="orange">等待补偿</Tag>{r.compensationNote}</div>
+              <div>
+                <Button size="small" type="link" style={{ padding: 0 }}
+                  onClick={() => setShowTransfer(showTransfer === r.id ? null : r.id)}>
+                  {showTransfer === r.id ? '收起换乘建议' : '查看等待补偿与换乘建议'}
+                </Button>
+                <Button size="small" type="link" danger
+                  onClick={() => complaintModal(r, onChanged)}>我要投诉</Button>
+              </div>
+              {showTransfer === r.id && (
+                <div style={{ background: '#fafafa', padding: 8, borderRadius: 6 }}>
+                  <div><Tag>换乘建议</Tag>{r.transferNote}</div>
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    站点等候策略：{r.waitPolicy || '站点同步中…'}
+                  </div>
+                  {r.dispatchAction !== 'pending' && r.dispatchAction !== 'none' && (
+                    <div style={{ marginTop: 4 }}>调度处置：{r.dispatchNote}</div>
+                  )}
+                  {r.extraTripCode && <div style={{ marginTop: 4 }}>调度已临时增派空车 <b>{r.extraTripCode}</b>，空车到站后跳站游客优先上客。</div>}
+                  {r.complaintCount > 0 && <div style={{ marginTop: 4 }} className="muted">本记录已有 {r.complaintCount} 起投诉，由客服基于同一记录处理。</div>}
+                </div>
+              )}
+            </Space>
+          }
+        />
+      ))}
+    </Space>
+  );
+}
+
+function complaintModal(r: any, onDone: () => void) {
+  Modal.confirm({
+    title: `就跳站记录 ${r.code} 发起投诉`,
+    width: 480,
+    content: (
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Input id="cp-name" placeholder="您的称呼（可选）" />
+        <Input.TextArea id="cp-text" rows={3} placeholder="描述投诉内容，客服将基于同一条跳站记录处理" />
+      </Space>
+    ),
+    onOk: async () => {
+      const visitorName = (document.getElementById('cp-name') as HTMLInputElement)?.value || '游客';
+      const content = (document.getElementById('cp-text') as HTMLTextAreaElement)?.value || '';
+      await api.post(`/skip-records/${r.id}/complaint`, { visitorName, content });
+      onDone();
+    },
+  });
+}
+
+const SKIP_STATUS: Record<string, any> = {
+  recorded: <Tag color="orange">待站点负责人确认</Tag>,
+  confirmed: <Tag color="blue">待调度主管复核</Tag>,
+  reviewed: <Tag color="purple">主管已复核·投诉处理中</Tag>,
+  closed: <Tag color="green">已闭环</Tag>,
+};
 
 function roleName(r: string) {
   return ({

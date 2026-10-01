@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import {
   Card, Button, Tag, Space, Table, Select, Alert, Row, Col, Statistic, Modal,
-  Input, InputNumber, message, Tabs, Badge, Popconfirm, Typography,
+  Input, InputNumber, message, Tabs, Badge, Popconfirm, Typography, Empty,
 } from 'antd';
 import {
   CloudServerOutlined, ThunderboltOutlined, WarningOutlined,
@@ -63,6 +63,8 @@ export default function DispatchPage() {
 
       <Tabs
         items={[
+          { key: 'skip', label: <Badge count={dash?.skipRecords?.length || 0} size="small">满载跳站调度</Badge>,
+            children: <SkipDispatchTab dash={dash} refresh={refresh} /> },
           { key: 'board', label: '站点与车辆', children: <BoardTab dash={dash} loading={loading} geo={geo} refresh={refresh} /> },
           { key: 'dispatch', label: '派班发车', children: <DispatchTab dash={dash} refresh={refresh} /> },
           { key: 'charter', label: '团队包车', children: <CharterTab dash={dash} refresh={refresh} /> },
@@ -448,3 +450,147 @@ function AddControl({ stations, onDone }: { stations: any[]; onDone: () => void 
 function vehicleStatus(s: string) {
   return ({ idle: '待命', running: '在运', charging: '充电', maintenance: '维保', breakdown: '故障' } as any)[s] || s;
 }
+
+/* ================= 满载跳站调度（增派空车 / 离站规则 / 主管复核） ================= */
+
+function SkipDispatchTab({ dash, refresh }: any) {
+  const rows: any[] = dash?.skipRecords || [];
+  return (
+    <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <Alert type="info" showIcon
+        message="满载跳站记录影响该站下一轮车辆调度：站点负责人确认后，调度可临时增派空车，或调整车辆「不满载离站」规则（为本站预留座位）；处置完成后由调度主管复核闭环。" />
+      <Card title={`跳站记录（开放 ${rows.length} 条）`}>
+        {rows.length === 0 && <Empty description="当前没有未闭环的满载跳站记录" />}
+        {rows.map((r: any) => <SkipDispatchRow key={r.id} r={r} dash={dash} refresh={refresh} />)}
+      </Card>
+    </Space>
+  );
+}
+
+function SkipDispatchRow({ r, dash, refresh }: { r: any; dash: any; refresh: () => void }) {
+  const [open, setOpen] = useState(false);
+  const station = (dash?.stations || []).find((s: any) => s.id === r.stationId);
+  const ruleText = station?.dispatchRule === 'reserve_seats'
+    ? `预留 ${station.reserveSeats} 座·不满载离站` : '满载可跳站（默认）';
+  return (
+    <div style={{ border: '1px solid #ffd8bf', borderRadius: 8, padding: 12, marginBottom: 12, background: r.status === 'recorded' ? '#fff7e6' : '#fff' }}>
+      <Space wrap>
+        <b>{r.code}</b>
+        {SKIP_STATUS_TAG[r.status]}
+        {r.confirmedAt ? <Tag color="blue">站点负责人 {r.confirmedBy} 已确认</Tag>
+          : <Tag color="orange">待站点负责人确认</Tag>}
+        {r.reviewedAt && <Tag color="purple">主管 {r.reviewedBy} 已复核</Tag>}
+        <Button size="small" type="link" onClick={() => setOpen(!open)}>{open ? '收起调度详情' : '调度详情'}</Button>
+      </Space>
+      <div style={{ marginTop: 6 }}>
+        站点 <b>{r.stationName}</b>｜跳站车辆 {r.vehicleCode}｜车内 <b>{r.onboardCount}/{r.capacity}</b> 人｜
+        站台滞留 <b>{r.platformPeople}</b> 人（{r.platformGroups} 组）｜
+        下一班 {r.nextVehicleCode} 约 <b>{r.nextEtaMinutes}</b> 分钟
+      </div>
+      {r.dispatchNote && <div style={{ marginTop: 4 }}><Tag color="blue">已处置</Tag>{r.dispatchNote}</div>}
+      {open && (
+        <Space direction="vertical" size={10} style={{ width: '100%', marginTop: 10 }}>
+          <Alert type="warning" showIcon message={`本站当前离站规则：${ruleText}`} />
+          <div><Tag color="orange">游客等待补偿</Tag>{r.compensationNote}</div>
+          <div><Tag>换乘建议</Tag>{r.transferNote}</div>
+          <div><Tag color="green">站点等候策略</Tag>{r.waitPolicy}</div>
+          {r.stationLeaderNote && <div className="muted">站点确认说明：{r.stationLeaderNote}</div>}
+          {r.complaintCount > 0 && (
+            <Alert type="warning" showIcon message={`关联 ${r.complaintCount} 起投诉（客服同记录处理）`}
+              description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{r.complaintSummary}</pre>} />
+          )}
+          <Row gutter={12}>
+            <Col span={12}>
+              <Card size="small" title="① 临时增派空车（走派班校验：电量/安检/工时/天气/管制）">
+                <ExtraVehicleForm r={r} dash={dash} refresh={refresh} />
+              </Card>
+            </Col>
+            <Col span={12}>
+              <Card size="small" title="② 调整车辆不满载离站规则（为本站预留运力）">
+                <RuleAdjustForm r={r} refresh={refresh} current={station} />
+              </Card>
+            </Col>
+          </Row>
+          <Card size="small" title="③ 调度主管复核（站点确认 + 调度处置之后）">
+            <ReviewForm r={r} refresh={refresh} />
+          </Card>
+        </Space>
+      )}
+    </div>
+  );
+}
+
+function ExtraVehicleForm({ r, dash, refresh }: { r: any; dash: any; refresh: () => void }) {
+  const [vehicleId, setVehicleId] = useState<number>();
+  const [driverId, setDriverId] = useState<number>();
+  const disabled = !!r.extraTripId;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Select style={{ width: '100%' }} placeholder="选择空车" disabled={disabled} value={vehicleId} onChange={setVehicleId}
+        options={(dash?.vehicles || []).filter((v: any) => v.status !== 'running').map((v: any) => ({
+          value: v.id, label: `${v.code} ${v.capacity}座 电量${v.battery}% ${vehicleStatus(v.status)}${v.driverName ? `（${v.driverName}在车上）` : ''}`,
+        }))} />
+      <Select style={{ width: '100%' }} placeholder="选择司机" disabled={disabled} value={driverId} onChange={setDriverId}
+        options={(dash?.drivers || []).map((d: any) => ({
+          value: d.id, label: `${d.name} 工时${d.workMinutesToday}分${d.restRequired ? '(须休息)' : ''}`,
+        }))} />
+      <Button type="primary" disabled={disabled || !vehicleId || !driverId} onClick={async () => {
+        try {
+          const res = await api.post(`/skip-records/${r.id}/dispatch-extra`, { vehicleId, driverId });
+          message.success(`已增派空车 ${res.trip.code}，空车到站跳站游客优先上客`);
+          refresh();
+        } catch (e: any) { message.error(e.message); }
+      }}>{r.extraTripId ? `已增派（班次 #${r.extraTripId}）` : '立即增派空车驶向本站'}</Button>
+    </Space>
+  );
+}
+
+function RuleAdjustForm({ r, refresh, current }: { r: any; refresh: () => void; current: any }) {
+  const [seats, setSeats] = useState(current?.reserveSeats || 2);
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <div className="muted">启用「预留座位」后，同线路途经本站的车辆在本站之前检票时必须留出座位，即车辆可能不满载离站，为本站保留运力。</div>
+      <Space wrap>
+        <InputNumber min={1} max={10} value={seats} onChange={v => setSeats(v || 2)} addonBefore="预留" addonAfter="座" />
+        <Button onClick={async () => {
+          await api.post(`/skip-records/${r.id}/rule`, { rule: 'reserve_seats', reserveSeats: seats });
+          message.success(`已调整：途经车辆为本站预留 ${seats} 座（不满载离站）`);
+          refresh();
+        }}>改为预留座位</Button>
+        {current?.dispatchRule === 'reserve_seats' && (
+          <Button danger ghost onClick={async () => {
+            await api.post(`/skip-records/${r.id}/rule`, { rule: 'full_load_skip' });
+            message.success('已恢复满载可跳站默认规则'); refresh();
+          }}>恢复满载跳站默认</Button>
+        )}
+      </Space>
+    </Space>
+  );
+}
+
+function ReviewForm({ r, refresh }: { r: any; refresh: () => void }) {
+  const [reviewer, setReviewer] = useState('');
+  const [note, setNote] = useState('');
+  if (r.reviewedAt) return <Alert type="success" showIcon
+    message={`调度主管 ${r.reviewedBy} 已复核：${r.reviewNote || '处置适当'}`} />;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Input placeholder="调度主管姓名" value={reviewer} onChange={e => setReviewer(e.target.value)} />
+      <Input.TextArea rows={2} placeholder="复核意见，如：增派空车已接上滞留游客，离站规则下一轮保留观察"
+        value={note} onChange={e => setNote(e.target.value)} />
+      <Button type="primary" disabled={!r.confirmedAt} onClick={async () => {
+        try {
+          await api.post(`/skip-records/${r.id}/review`, { reviewer, note });
+          message.success('主管复核完成'); refresh();
+        } catch (e: any) { message.error(e.message); }
+      }}>{r.confirmedAt ? '主管复核并闭环' : '需等待站点负责人确认'}</Button>
+    </Space>
+  );
+}
+
+const SKIP_STATUS_TAG: Record<string, any> = {
+  recorded: <Tag color="orange">待站点确认</Tag>,
+  confirmed: <Tag color="blue">待主管复核</Tag>,
+  reviewed: <Tag color="purple">投诉处理中</Tag>,
+  closed: <Tag color="green">已闭环</Tag>,
+};

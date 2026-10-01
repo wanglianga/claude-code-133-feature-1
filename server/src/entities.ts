@@ -27,6 +27,10 @@ export class Station {
   @Column({ default: 0 }) flowLimitPerHour: number;     // 景点限流：0 不限
   @Column({ default: false }) isHot: boolean;           // 热门站点
   @Column({ default: 'normal' }) status: 'normal' | 'restricted' | 'closed';
+  @Column({ default: 'full_load_skip' })
+  dispatchRule: 'full_load_skip' | 'reserve_seats';    // 车辆到站不满载离站规则
+  @Column({ default: 0 }) reserveSeats: number;         // reserve_seats 时为下一站预留座位数
+  @Column({ nullable: true }) dispatchRuleUpdatedAt: string | null;
 }
 
 /* ---------------- 车辆与司机 ---------------- */
@@ -174,6 +178,7 @@ export class Incident {
   @Column({ default: 'dispatch' })
   ownerRole: 'staff' | 'dispatch' | 'driver' | 'service' | 'service_supervisor' | 'finance' | 'system';
   @Column({ default: '' }) resolution: string;
+  @Column({ nullable: true }) skipRecordId: number | null; // 满载跳站解释记录
   @Column('simple-json', { nullable: true })
   timeline: { at: string; role: string; text: string }[] | null;
   @Column() createdAt: string;
@@ -243,6 +248,66 @@ export class GeofenceEvent {
   @Column() at: string;
 }
 
+/* ---------------- 满载跳站解释（站点 / 调度 / 客服 / 游客共用一条记录） ---------------- */
+
+export type SkipReason = 'vehicle_full' | 'wheelchair_full';
+export type SkipStatus =
+  | 'recorded'        // 站点端已登记，等待站点负责人确认
+  | 'confirmed'       // 站点负责人已确认，等待调度主管复核
+  | 'reviewed'        // 调度主管已复核
+  | 'closed';
+
+@Entity('skip_records')
+export class SkipRecord {
+  @PrimaryGeneratedColumn() id: number;
+  @Column() code: string;            // SK20260925-001
+  @Index() @Column() stationId: number;
+  @Index() @Column() tripId: number;
+  @Column() vehicleId: number;
+  @Column() routeId: number;
+
+  // —— 站点端登记：跳站原因 / 车内人数 / 下一班预计到达 ——
+  @Column({ default: 'vehicle_full' }) reason: SkipReason;
+  @Column('int') onboardCount: number;          // 跳站时车内人数
+  @Column('int') capacity: number;              // 车辆核定座位
+  @Column('int', { default: 0 }) wheelchairHeld: number;
+  @Column('int', { default: 0 }) platformGroups: number; // 站台未能上车组数
+  @Column('int', { default: 0 }) platformPeople: number; // 站台未能上车人数
+  @Column({ nullable: true }) nextTripId: number | null; // 系统预测的下一班
+  @Column() nextEtaAt: string;                  // 下一班预计到达时间
+  @Column('int') nextEtaMinutes: number;        // 预计多少分钟后到站
+  @Column({ default: '' }) nextVehicleCode: string;
+
+  // —— 游客端：等待补偿 / 换乘建议 ——
+  @Column({ default: '' }) compensationNote: string;      // 等待补偿说明
+  @Column({ nullable: true }) compensationVoucher: number | null; // 等待补偿券（分）
+  @Column({ default: '' }) transferNote: string;          // 换乘建议
+  @Column('simple-json', { nullable: true }) affectedTicketIds: number[] | null;
+
+  // —— 调度联动：影响下一轮调度 ——
+  @Column({ default: 'pending' })
+  dispatchAction: 'none' | 'pending' | 'extra_dispatched' | 'rule_adjusted' | 'both';
+  @Column({ default: '' }) dispatchNote: string;
+  @Column({ nullable: true }) extraTripId: number | null;  // 临时增派空车班次
+  @Column({ nullable: true }) reviewedBy: string | null;   // 调度主管
+  @Column({ nullable: true }) reviewedAt: string | null;
+  @Column({ default: '' }) reviewNote: string;
+
+  // —— 站点端：等候策略同步 + 站点负责人确认 ——
+  @Column({ default: '' }) waitPolicy: string;             // 本站同步执行的等候策略
+  @Column({ default: '' }) stationLeaderNote: string;
+  @Column({ nullable: true }) confirmedBy: string | null;  // 站点负责人
+  @Column({ nullable: true }) confirmedAt: string | null;
+
+  // —— 客服：同一记录处理投诉 ——
+  @Column({ default: 0 }) complaintCount: number;
+  @Column({ default: '' }) complaintSummary: string;
+  @Column({ nullable: true }) incidentId: number | null;
+  @Column({ default: 'recorded' }) status: SkipStatus;
+
+  @Column() createdAt: string;
+}
+
 /* ---------------- 团队包车 ---------------- */
 
 @Entity('charter_orders')
@@ -268,5 +333,5 @@ export class CharterOrder {
 
 export const ALL_ENTITIES = [
   RouteLine, Station, Vehicle, Driver, SafetyCheck, Trip, Ticket, QueueEntry,
-  Incident, Refund, Broadcast, Weather, RoadControl, GeofenceEvent, CharterOrder,
+  Incident, Refund, Broadcast, Weather, RoadControl, GeofenceEvent, SkipRecord, CharterOrder,
 ];

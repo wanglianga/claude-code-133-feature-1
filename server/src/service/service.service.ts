@@ -3,6 +3,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Refund, Ticket, Incident, Trip } from '../entities';
 import { IncidentsService } from '../incidents/incidents.service';
+import { SkipService } from '../skip/skip.service';
 import { now } from '../common';
 
 @Injectable()
@@ -13,6 +14,7 @@ export class ServiceService {
     @InjectRepository(Incident) private readonly incidents: Repository<Incident>,
     @InjectRepository(Trip) private readonly trips: Repository<Trip>,
     private readonly incidentSvc: IncidentsService,
+    private readonly skipSvc: SkipService,
   ) {}
 
   /** 客服工作台：待办退票 + 开放事件 */
@@ -27,14 +29,17 @@ export class ServiceService {
     const ticketRows = await this.tickets.find();
     const tMap = new Map(ticketRows.map(t => [t.id, t]));
     const withTicket = (r: Refund) => ({ ...r, ticket: tMap.get(r.ticketId) });
+    const skipRecords = await this.skipSvc.list({ open: true });
     return {
       pendingRefunds: pendingRefunds.map(withTicket),
       escalatedRefunds: escalated.map(withTicket),
       openIncidents,
+      skipRecords,
       counts: {
         pendingRefund: pendingRefunds.length,
         escalated: escalated.length,
         openIncident: openIncidents.length,
+        skipComplaint: skipRecords.filter(r => r.complaintCount > 0 && r.complaintSummary.includes('【客服已处理】') === false).length,
       },
     };
   }

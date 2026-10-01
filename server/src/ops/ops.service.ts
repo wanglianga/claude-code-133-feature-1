@@ -2,7 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import {
-  QueueEntry, Ticket, Trip, Vehicle, Incident, Refund, Station,
+  QueueEntry, Ticket, Trip, Vehicle, Incident, Refund, Station, SkipRecord,
 } from '../entities';
 
 @Injectable()
@@ -15,11 +15,12 @@ export class OpsService {
     @InjectRepository(Incident) private readonly incidents: Repository<Incident>,
     @InjectRepository(Refund) private readonly refunds: Repository<Refund>,
     @InjectRepository(Station) private readonly stations: Repository<Station>,
+    @InjectRepository(SkipRecord) private readonly skipRecords: Repository<SkipRecord>,
   ) {}
 
   /** 运营复盘：站点等待 / 车辆利用率 / 投诉原因 / 退票成本 */
   async report() {
-    const [entries, allTickets, trips, vehicles, incs, refunds, stations] = await Promise.all([
+    const [entries, allTickets, trips, vehicles, incs, refunds, stations, skipRows] = await Promise.all([
       this.queue.find(),
       this.tickets.find(),
       this.trips.find(),
@@ -27,6 +28,7 @@ export class OpsService {
       this.incidents.find(),
       this.refunds.find(),
       this.stations.find(),
+      this.skipRecords.find(),
     ]);
 
     /* ---- 站点等待 ---- */
@@ -37,6 +39,7 @@ export class OpsService {
       const avg = waits.length ? Math.round(waits.reduce((a, b) => a + b, 0) / waits.length) : 0;
       const max = waits.length ? Math.max(...waits) : 0;
       const skipped = es.filter(e => e.status === 'skipped').length;
+      const skipsHere = skipRows.filter(r => r.stationId === s.id);
       return {
         stationId: s.id, stationName: s.name, isHot: s.isHot,
         queueGroups: es.length,
@@ -44,6 +47,9 @@ export class OpsService {
         avgWaitSeconds: avg,
         maxWaitSeconds: max,
         skippedGroups: skipped,
+        skipCount: skipsHere.length,
+        skipStrandedPeople: skipsHere.reduce((a, r) => a + r.platformPeople, 0),
+        extraDispatched: skipsHere.filter(r => r.extraTripId != null).length,
       };
     }).sort((a, b) => b.avgWaitSeconds - a.avgWaitSeconds);
 
@@ -128,8 +134,23 @@ export class OpsService {
       pendingRefund: pending.length + approved.length,
       escalatedRefund: escalated.length,
       openIncidents: incs.filter(i => ['open', 'processing', 'escalated'].includes(i.status)).length,
+      skipTotal: skipRows.length,
+      skipStrandedPeople: skipRows.reduce((a, r) => a + r.platformPeople, 0),
+      skipExtraTrips: skipRows.filter(r => r.extraTripId != null).length,
+      skipComplaints: skipRows.reduce((a, r) => a + r.complaintCount, 0),
     };
 
-    return { kpi, stationWait, vehicleUtil, complaintReasons, refundByFault: byFault };
+    return {
+      kpi, stationWait, vehicleUtil, complaintReasons, refundByFault: byFault,
+      skipSummary: {
+        total: skipRows.length,
+        pendingConfirm: skipRows.filter(r => r.status === 'recorded').length,
+        pendingReview: skipRows.filter(r => r.status === 'confirmed').length,
+        closed: skipRows.filter(r => r.status === 'closed').length,
+        extraTrips: skipRows.filter(r => r.extraTripId != null).length,
+        ruleAdjusted: skipRows.filter(r => r.dispatchAction === 'rule_adjusted' || r.dispatchAction === 'both').length,
+        complaints: skipRows.reduce((a, r) => a + r.complaintCount, 0),
+      },
+    };
   }
 }

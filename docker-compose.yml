@@ -1,0 +1,27 @@
+services:
+  server:
+    build: ./server
+    container_name: scenic-shuttle-server
+    ports:
+      - "3001:3001"
+    volumes:
+      - scenic-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/overview"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  web:
+    build: ./web
+    container_name: scenic-shuttle-web
+    ports:
+      - "8080:80"
+    depends_on:
+      server:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  scenic-data:

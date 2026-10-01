@@ -10,9 +10,24 @@
 
 ## 一、本地启动
 
-需要 Node.js ≥ 18（开发环境为 Node 22）。需打开**两个终端**：
+需要 Node.js ≥ 18（开发环境为 Node 22）。
 
-### 1. 启动后端（端口 3001）
+### 方式 A：Docker / Compose 一键启动（推荐，无需本机 Node 环境）
+
+```bash
+docker compose up --build
+# 前端：http://localhost:8080 （Nginx 托管，/api 自动反代后端）
+# 后端：http://localhost:3001/api
+# SQLite 数据保存在 Docker volume scenic-data 中；首次启动自动建表 + 写入种子数据
+```
+
+停止：`docker compose down`（加 `-v` 同时清空演示数据）。
+
+### 方式 B：本地双终端开发
+
+需打开**两个终端**：
+
+#### 1. 启动后端（端口 3001）
 
 ```bash
 cd server
@@ -22,7 +37,7 @@ npm start
 # 首次启动自动建表 + 写入种子数据
 ```
 
-### 2. 启动前端（端口 5173）
+#### 2. 启动前端（端口 5173）
 
 ```bash
 cd web
@@ -36,12 +51,14 @@ npm run dev
 
 ### 重置演示数据
 
-停止后端后删除 SQLite 文件再启动即可：
+- 本地运行：停止后端后删除 SQLite 文件再启动：
 
 ```bash
 rm -f server/data/app.sqlite
 cd server && npm start
 ```
+
+- Docker 运行：`docker compose down -v && docker compose up --build`
 
 ---
 
@@ -69,7 +86,7 @@ cd server && npm start
 | 站点排队 | 平板看板：排队人数、已检票数、车辆位置、座位余量、轮椅位、天气、道路管制；扫码入队自动校验始发站 |
 | 检票 | 一键叫号按「优先组优先 + 同组 FIFO」；自动校验**方向**与座位/轮椅位 |
 | 热门站排队过长 | 排队超站台容量 1.2 倍自动生成 `long_queue` 事件并推送调度加车建议 |
-| 满载跳站 | 车辆 GPS 到站（电子围栏）发现余座为 0：自动登记跳站、站台游客转回排队、通知调度加车并记录事件 |
+| 满载跳站 | 车辆 GPS 到站（电子围栏）发现余座为 0：自动生成**跳站解释记录**（跳站原因、车内人数/容量、站台滞留组人数、下一班预计到达、等待补偿、换乘建议、受影响票据），站台游客转跳站等待并自动广播；**游客端**在车票时间线上看到等待补偿/换乘建议并可就该记录投诉；**站点端**同步等候策略、由**站点负责人确认**；**客服**用同一条记录受理投诉并写回结论；**调度端**同步查看，记录影响该站下一轮调度——可**临时增派空车**（复用派班全部校验）或调整车辆**不满载离站规则**（为本站预留座位，途经车检票时强制留座），最后由**调度主管复核**闭环 |
 | 误上反方向 | 检票口方向不符自动拦截；游客坚持可「强制放行」，事件同步调度安排返程衔接 |
 | 老人优先争议 | 站务一键上报 `priority_dispute`，客服工作台接单并可闭环 |
 | 车辆故障 | 司机上报 → 车辆转故障、在运班停运、调度派备车、游客无责退票，事件串联票/车/班 |
@@ -90,27 +107,37 @@ cd server && npm start
 
 1. **游客页**：买一张无障碍优先票（勾老人+轮椅）→ 复制票号；再查 `T20260925-001` 看车票时间线。
 2. **站务页（选东门枢纽）**：输入新票号「扫码排队」→ 用「一键叫号」给班次 `TR…-001` 检票，观察**优先组先被叫到**；尝试给其他游客检本班观察方向拦截。
-3. **司机页**：选王建国+V01，完成 6 项安检；切换李海燕看强制休息提示；选陈志强+V02 用「到站/离站」驱动班车（先在调度把车卖满，再到站玻璃栈道可看到**满载跳站**弹窗）。
-4. **调度中心页**：
+3. **司机页**：选王建国+V01，完成 6 项安检；切换李海燕看强制休息提示；选陈志强+V02 用「到站/离站」驱动班车（先在调度把车卖满，再到站百花园可看到**满载跳站**弹窗，内含下一班预计到达）。
+4. **满载跳站全链路（本题）**：
+   - 司机页让一班车在东门检票卖满 → 到站百花园（该站需有排队游客，可先购票入队）→ 自动跳站；
+   - **站务页（切到百花园）**：查看跳站解释（原因/车内人数/下一班ETA/补偿/换乘建议）→「同步等候策略」→「站点负责人确认」；
+   - **游客页**：查询受影响票号，看到等待补偿与换乘建议，可点「我要投诉」；
+   - **调度中心 → 满载跳站调度**：① 选待命车+空闲司机「临时增派空车」（走电量/安检/工时/天气/管制全部派班校验），② 把本站改为「预留座位·不满载离站」（之后途经车检票会被强制留座），③ 输入主管姓名「调度主管复核」闭环；
+   - **客服页 → 跳站投诉**：基于同一条记录查看全部上下文并登记处理结果；
+   - 站务可把跳站游客「转回排队」，增派空车到站（司机页选该班到站百花园）后优先检票；
+   - **运营复盘页**：跳站次数/滞留人数/增派空车/投诉数进入站点与 KPI 统计。
+5. **调度中心页**：
    - 直接派班 V06 或选李海燕，观察**多重阻断原因**；
    - 用 V01+王建国派班成功；
    - 「天气与管制」里把预警改成等级 3（暴雨橙色）→ 出现**一键停运**；
    - 包车页代客登记 18 人+2 轮椅团队，先配小车被拒、再配 V05 成功。
-5. **客服页**：处理退票（同意/驳回/升级主管），在「主管争议裁决」完成终局裁决。
-6. **财务页**：对已核准退票单笔「出账退款」。
-7. **运营复盘页**：查看站点等待、车辆利用率、投诉原因、退票成本四张图表与 KPI。
-8. 回到**游客页**查询被退款车票，可见游客→客服→（主管）→财务的完整时间线。
+6. **客服页**：处理退票（同意/驳回/升级主管），在「主管争议裁决」完成终局裁决；在「跳站投诉」处理满载跳站关联投诉。
+7. **财务页**：对已核准退票单笔「出账退款」。
+8. **运营复盘页**：查看站点等待、车辆利用率、投诉原因、退票成本图表与含跳站统计的 KPI。
+9. 回到**游客页**查询被退款车票，可见游客→客服→（主管）→财务的完整时间线。
 
-### 自动化验证（后端端到端，36 项断言）
+### 自动化验证（后端端到端，67 项断言）
 
-后端启动状态下另开终端：
+建议在**全新演示库**上运行：停服 → `rm -f server/data/app.sqlite` → `npm start`，然后另开终端：
 
 ```bash
 node server/scripts/scenario-check.mjs
-# 输出 36 通过 / 0 失败
+# 输出 67 通过 / 0 失败
 ```
 
-该脚本覆盖：优先检票、始发站校验、派班多重阻断、安检不合格转维保、反方向拦截、满载跳站、车辆故障、退票核准→财务出账、争议升级主管裁决、暴雨停运与派班阻断、交班延误推迟下一班、包车座位/轮椅校验、广播限流、车票时间线、复盘报表。
+该脚本覆盖：优先检票、始发站校验、派班多重阻断、安检不合格转维保、反方向拦截、**满载跳站解释（原因/车内人数/下一班ETA/补偿/换乘/受影响票）、四端同步、站点负责人确认、游客投诉与客服同一记录处理、增派空车与派班校验、不满载离站预留座位强制、跳站游客转回排队优先检票、调度主管复核闭环、复盘跳站统计**、车辆故障、退票核准→财务出账、争议升级主管裁决、暴雨停运与派班阻断、交班延误推迟下一班、包车座位/轮椅校验、广播限流、车票时间线。
+
+> 本次开发实际在全新数据库上执行该脚本，结果为 **67 通过 / 0 失败**；前端通过 `npm run build`（vite build）验证编译通过；后端通过 `tsc --noEmit` 与编译产物 `node dist/main.js` 实际启动验证（沙箱无 Docker，镜像未在本地执行，但 Dockerfile 与该启动方式一致）。
 
 ---
 
@@ -137,18 +164,22 @@ DB_TYPE=mysql DB_HOST=127.0.0.1 DB_PORT=3306 DB_USER=root DB_PASSWORD=root DB_NA
 - 票务：`POST /tickets`、`GET /tickets/:id`（含票的完整事件时间线）、`GET /tickets/code/:code`、`POST /tickets/:id/refund`
 - 站点：`GET /overview`、`GET /routes`、`GET /stations/:id/board`、`POST /stations/:id/enqueue`、`POST /stations/:id/board-next`、`POST /queue/:id/board`、`POST /queue/:id/dispute`、`POST /broadcasts`、`PATCH /stations/:id`
 - 调度：`GET /dispatch/dashboard`、`POST /trips`、`POST /trips/:id/start-boarding|arrive|leave|complete`、`POST /safety-checks`、`POST /vehicles/:id/fault|charge|repair`、`POST /drivers/:id/duty|handover-delay`、`POST /weather`、`POST /road-controls`、`POST /dispatch/storm-suspend|resume`、`GET /geofence-events`、`POST /charters`、`POST /charters/:id/assign|status`
+- 满载跳站解释：`GET /skip-records`、`GET /skip-records/:id`、`POST /skip-records/:id/wait-policy|confirm|restore-queue|dispatch-extra|rule|review|complaint|complaint-resolve`
 - 客服/财务：`GET /service/workbench`、`POST /refunds/:id/approve|reject|escalate|supervisor-decide|pay`、`POST /incidents/:id/take|resolve`、`GET /incidents`
 - 复盘：`GET /ops/report`
 
 ## 七、目录结构
 
 ```
+docker-compose.yml       一键启动 server + web（Nginx 反代 /api）
 server/                 NestJS 后端
+  Dockerfile
   src/
-    entities.ts         15 张表：线路/站点/车辆/司机/安检/班次/车票/排队/事件/退票/广播/天气/管制/围栏/包车
-    tickets/ stations/ dispatch/ service/ ops/ incidents/
+    entities.ts         16 张表：线路/站点/车辆/司机/安检/班次/车票/排队/事件/退票/广播/天气/管制/围栏/跳站解释/包车
+    tickets/ stations/ dispatch/ service/ ops/ incidents/ skip/
     seed.service.ts     演示种子数据
+  scripts/scenario-check.mjs  端到端校验脚本（67 项断言）
 web/                    React 前端
+  Dockerfile + nginx.conf
   src/pages/            7 个角色工作台
-scripts/                端到端校验脚本（在 server/scripts/）
 ```

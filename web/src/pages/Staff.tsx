@@ -214,8 +214,11 @@ export default function StaffPage() {
               rowClassName={(r: any) => r.priority ? 'priority-row' : ''} />
           </Card>
 
-          <Card title="途经本站班车（车辆位置 · 座位余量 · 轮椅位）">
-            <Table rowKey="id" size="small" pagination={false} dataSource={board.trips}
+          {board.skipRecords?.length > 0 && (
+            <SkipStationCard board={board} refresh={refresh} />
+          )}
+
+          <Card title="途经本站班车（车辆位置 · 座位余量 · 轮椅位）">            <Table rowKey="id" size="small" pagination={false} dataSource={board.trips}
               columns={[
                 { title: '班次', dataIndex: 'code' },
                 { title: '状态', dataIndex: 'status', render: (s: string) => <Tag color={TRIP_STATUS[s]?.color}>{TRIP_STATUS[s]?.text}</Tag> },
@@ -294,3 +297,118 @@ function BroadcastModal({ open, stationId, onClose, onDone }:
     </Modal>
   );
 }
+
+/* ================= 满载跳站解释（站点端） ================= */
+
+function SkipStationCard({ board, refresh }: { board: any; refresh: () => void }) {
+  const [expanded, setExpanded] = useState<number | null>((board.skipRecords || [])[0]?.id || null);
+  return (
+    <Alert
+      type="error" showIcon icon={<WarningOutlined />}
+      style={{ padding: 0, overflow: 'hidden' }}
+      message={
+        <div style={{ background: '#fff2f0', padding: '10px 16px', fontWeight: 600 }}>
+          满载跳站解释记录（{board.skipRecords.length} 条）· 本站同步执行等候策略，由站点负责人确认后流转调度
+        </div>
+      }
+      description={
+        <Space direction="vertical" size={10} style={{ width: '100%', padding: '4px 16px 14px' }}>
+          {board.skipRecords.map((r: any) => (
+            <div key={r.id} style={{ border: '1px solid #ffccc7', borderRadius: 8, padding: 10 }}>
+              <Space wrap>
+                <b>{r.code}</b>
+                {SKIP_TAG[r.status]}
+                <Tag>{r.reason === 'wheelchair_full' ? '车内/轮椅位双满' : '车辆满载'}</Tag>
+                <span className="muted">{new Date(r.createdAt).toLocaleString('zh-CN')}</span>
+                <Button size="small" type="link" onClick={() => setExpanded(expanded === r.id ? null : r.id)}>
+                  {expanded === r.id ? '收起' : '详情'}
+                </Button>
+              </Space>
+              <div style={{ marginTop: 6 }}>
+                跳站班次 <b>{r.tripCode}</b>（{r.vehicleCode}）｜车内 <b>{r.onboardCount}/{r.capacity}</b> 人｜
+                站台滞留 <b>{r.platformPeople}</b> 人（{r.platformGroups} 组）｜
+                下一班 <b>{r.nextVehicleCode}</b> 约 <b>{r.nextEtaMinutes}</b> 分钟到站
+                （{new Date(r.nextEtaAt).toLocaleTimeString('zh-CN')}）
+              </div>
+              {expanded === r.id && (
+                <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 8 }}>
+                  <div><Tag color="orange">等待补偿（同步游客端）</Tag>{r.compensationNote}</div>
+                  <div><Tag>换乘建议（同步游客端）</Tag>{r.transferNote}</div>
+                  <div style={{ background: '#f6ffed', padding: 8, borderRadius: 6 }}>
+                    <div><Tag color="green">本站等候策略</Tag>{r.waitPolicy}</div>
+                  </div>
+                  {r.dispatchNote && <div><Tag color="blue">调度处置</Tag>{r.dispatchNote}</div>}
+                  {r.extraTripId && <div>已增派空车班次 <b>{r.extraTripCode || `#${r.extraTripId}`}</b>，空车到站跳站游客优先上客。</div>}
+                  {r.complaintCount > 0 && (
+                    <Alert type="warning" showIcon
+                      message={`该记录关联 ${r.complaintCount} 起游客投诉，客服使用同一记录处理`}
+                      description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{r.complaintSummary}</pre>} />
+                  )}
+                  {r.stationLeaderNote && <div className="muted">负责人说明：{r.stationLeaderNote}</div>}
+                  {r.reviewNote && <div className="muted">主管复核：{r.reviewNote}</div>}
+                  <Space wrap>
+                    <Button size="small" onClick={() => policyModal(r, refresh)}>同步等候策略</Button>
+                    <Button size="small" onClick={async () => {
+                      const res = await api.post(`/skip-records/${r.id}/restore-queue`, {});
+                      message.success(`已将 ${res.restored} 组跳站游客转回排队`); refresh();
+                    }}>跳站游客转回排队</Button>
+                    {!r.confirmedAt && <Button size="small" type="primary" onClick={() => confirmModal(r, refresh)}>
+                      站点负责人确认
+                    </Button>}
+                    {r.confirmedAt && !r.reviewedAt && <Tag color="blue">负责人 {r.confirmedBy} 已确认，待调度主管复核</Tag>}
+                    {r.reviewedAt && <Tag color="purple">主管 {r.reviewedBy} 已复核{r.status === 'closed' ? '· 已闭环' : '· 投诉处理中'}</Tag>}
+                  </Space>
+                </Space>
+              )}
+            </div>
+          ))}
+        </Space>
+      }
+    />
+  );
+}
+
+function policyModal(r: any, refresh: () => void) {
+  Modal.confirm({
+    title: `同步本站等候策略（${r.code}）`,
+    width: 560,
+    content: <Input.TextArea id="skip-policy" rows={4} defaultValue={r.waitPolicy}
+      placeholder="向本站站务同步的等候策略，游客端也可见" />,
+    onOk: async () => {
+      const waitPolicy = (document.getElementById('skip-policy') as HTMLTextAreaElement)?.value || '';
+      await api.post(`/skip-records/${r.id}/wait-policy`, { waitPolicy });
+      message.success('等候策略已同步站务与游客端');
+      refresh();
+    },
+  });
+}
+
+function confirmModal(r: any, refresh: () => void) {
+  Modal.confirm({
+    title: `站点负责人确认跳站记录 ${r.code}`,
+    width: 560,
+    content: (
+      <Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>
+        <Input id="skip-leader" placeholder="站点负责人姓名" />
+        <Input.TextArea id="skip-leader-note" rows={3}
+          defaultValue="现场已核实车辆满载无法上客，等候策略已布置，滞留游客情绪平稳"
+          placeholder="确认说明（可选）" />
+      </Space>
+    ),
+    onOk: async () => {
+      const leaderName = (document.getElementById('skip-leader') as HTMLInputElement)?.value || '';
+      const note = (document.getElementById('skip-leader-note') as HTMLTextAreaElement)?.value || '';
+      if (!leaderName.trim()) { message.warning('请填写站点负责人姓名'); throw new Error('name required'); }
+      await api.post(`/skip-records/${r.id}/confirm`, { leaderName, note });
+      message.success('已确认，流转调度中心处置与主管复核');
+      refresh();
+    },
+  });
+}
+
+const SKIP_TAG: Record<string, any> = {
+  recorded: <Tag color="orange">待负责人确认</Tag>,
+  confirmed: <Tag color="blue">待调度主管复核</Tag>,
+  reviewed: <Tag color="purple">主管已复核·投诉处理中</Tag>,
+  closed: <Tag color="green">已闭环</Tag>,
+};

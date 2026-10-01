@@ -181,7 +181,12 @@ function TripPanel({ trip, onEvent }: { trip: any; onEvent: () => void }) {
             if (r.skipped) {
               Modal.warning({
                 title: '车辆满载，已自动跳站',
-                content: `本站 ${r.waitingGroups} 组游客未能上车，事件已同步调度加车，站台已自动广播`,
+                content: (
+                  <Space direction="vertical" size={4}>
+                    <div>跳站记录 <b>{r.skipRecord?.code}</b>：车内 {r.skipRecord?.onboardCount}/{r.skipRecord?.capacity} 人，本站 {r.waitingGroups} 组游客未能上车。</div>
+                    <div>系统已通知调度，下一班 {r.skipRecord?.nextVehicleCode} 预计 {r.skipRecord?.nextEtaMinutes} 分钟到站；站台已广播等待补偿与换乘建议，站务同步等候策略并由站点负责人确认。</div>
+                  </Space>
+                ),
               });
             } else {
               message.success(`已到站：余 ${r.seatsLeft} 座，轮椅位 ${r.wheelchairLeft}，站台 ${r.waitingPeople || 0} 人等候`);

@@ -22,6 +22,8 @@ export default function OpsPage() {
         <div className="stat-card"><div className="l">退票率</div><div className="v" style={{ color: k.refundRate > 10 ? '#cf1322' : undefined }}>{k.refundRate}%</div></div>
         <div className="stat-card"><div className="l">退票成本(已付)</div><div className="v" style={{ color: '#cf1322' }}>{fen(k.refundPaidTotal)}</div></div>
         <div className="stat-card"><div className="l">未闭环事件</div><div className="v">{k.openIncidents}</div></div>
+        <div className="stat-card"><div className="l">满载跳站次数</div><div className="v" style={{ color: k.skipTotal ? '#cf1322' : undefined }}>{k.skipTotal}</div></div>
+        <div className="stat-card"><div className="l">跳站滞留/增派/投诉</div><div className="v" style={{ fontSize: 18 }}>{k.skipStrandedPeople} / {k.skipExtraTrips} / {k.skipComplaints}</div></div>
       </div>
 
       <Row gutter={16}>
@@ -120,6 +122,9 @@ export default function OpsPage() {
             { title: '平均等待', dataIndex: 'avgWaitSeconds', render: (v: number) => waitText(v) },
             { title: '最长等待', dataIndex: 'maxWaitSeconds', render: (v: number) => waitText(v) },
             { title: '满载被跳', dataIndex: 'skippedGroups', render: (v: number) => v ? <Tag color="red">{v} 组</Tag> : 0 },
+            { title: '跳站登记', dataIndex: 'skipCount', render: (v: number) => v ? <Tag color="orange">{v} 次</Tag> : 0 },
+            { title: '跳站滞留人数', dataIndex: 'skipStrandedPeople', render: (v: number) => v ? <Tag color="red">{v} 人</Tag> : 0 },
+            { title: '已增派空车', dataIndex: 'extraDispatched', render: (v: number) => v ? <Tag color="green">{v} 班</Tag> : 0 },
           ]} />
       </Card>
     </Space>

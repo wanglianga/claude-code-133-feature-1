@@ -24,6 +24,7 @@ export default function ServicePage() {
 
   const pending = wb?.pendingRefunds || [];
   const escalated = wb?.escalatedRefunds || [];
+  const skipRecords: any[] = wb?.skipRecords || [];
 
   const refundCols = (mode: 'agent' | 'supervisor') => [
     { title: '退票单', dataIndex: 'code', width: 150 },
@@ -68,6 +69,7 @@ export default function ServicePage() {
         <div className="stat-card"><div className="l">待审退票</div><div className="v" style={{ color: '#d46b08' }}>{wb?.counts?.pendingRefund ?? 0}</div></div>
         <div className="stat-card"><div className="l">主管处理中</div><div className="v" style={{ color: '#722ed1' }}>{wb?.counts?.escalated ?? 0}</div></div>
         <div className="stat-card"><div className="l">待处理事件</div><div className="v">{wb?.counts?.openIncident ?? 0}</div></div>
+        <div className="stat-card"><div className="l">跳站记录待办投诉</div><div className="v" style={{ color: '#cf1322' }}>{wb?.counts?.skipComplaint ?? 0}</div></div>
       </div>
 
       <Tabs
@@ -83,6 +85,11 @@ export default function ServicePage() {
             label: <Badge count={escalated.length} size="small">主管争议裁决</Badge>,
             children: <Table rowKey="id" size="small" pagination={false} dataSource={escalated}
               columns={refundCols('supervisor')} locale={{ emptyText: <Empty description="没有升级争议" /> }} />,
+          },
+          {
+            key: 'skips',
+            label: <Badge count={skipRecords.filter(r => r.complaintCount > 0).length} size="small">跳站投诉（同一记录）</Badge>,
+            children: <SkipComplaintPanel records={skipRecords} refresh={refresh} />,
           },
           {
             key: 'incidents',
@@ -222,3 +229,75 @@ function roleName(r: string) {
     service: '客服', service_supervisor: '客服主管', finance: '财务', system: '系统',
   } as Record<string, string>)[r] || r;
 }
+
+/* ================= 满载跳站投诉（客服使用同一条记录处理） ================= */
+
+function SkipComplaintPanel({ records, refresh }: { records: any[]; refresh: () => void }) {
+  const [open, setOpen] = useState<number | null>(null);
+  if (!records.length) return <Empty description="暂无开放的满载跳站记录" />;
+  return (
+    <Space direction="vertical" style={{ width: '100%' }}>
+      <Alert type="info" showIcon
+        message="游客就「满载跳站」的投诉与站务登记、调度处置挂在同一条跳站记录上：客服可直接查看车内人数、下一班ETA、补偿与换乘建议、站点确认与调度动作，处理结论同步回该记录与事件时间线。" />
+      {records.map((r: any) => {
+        const unresolved = r.complaintCount > 0 && !r.complaintSummary.includes('【客服已处理】');
+        return (
+          <Card key={r.id} size="small"
+            title={<Space wrap>
+              <b>{r.code}</b>
+              {SKIP_STATUS_LABEL[r.status]}
+              {r.complaintCount > 0
+                ? <Tag color={unresolved ? 'red' : 'green'}>{r.complaintCount} 起投诉{unresolved ? '·待处理' : '·已处理'}</Tag>
+                : <Tag>暂无投诉</Tag>}
+            </Space>}
+            extra={<Button size="small" onClick={() => setOpen(open === r.id ? null : r.id)}>
+              {open === r.id ? '收起' : '查看记录/处理'}
+            </Button>}>
+            <div>
+              {r.stationName}｜车辆 {r.vehicleCode}｜跳站时车内 <b>{r.onboardCount}/{r.capacity}</b> 人｜
+              滞留 {r.platformPeople} 人（{r.platformGroups} 组）｜下一班 {r.nextVehicleCode} 约 {r.nextEtaMinutes} 分钟
+            </div>
+            {open === r.id && (
+              <Space direction="vertical" size={8} style={{ width: '100%', marginTop: 10 }}>
+                <div><Tag color="orange">等待补偿</Tag>{r.compensationNote}</div>
+                <div><Tag>换乘建议</Tag>{r.transferNote}</div>
+                <div><Tag color="green">站点等候策略</Tag>{r.waitPolicy}</div>
+                <div className="muted">
+                  站点确认：{r.confirmedBy ? `${r.confirmedBy}（${r.stationLeaderNote || '已确认'}）` : '尚未确认'}
+                  ｜调度主管复核：{r.reviewedBy ? `${r.reviewedBy}（${r.reviewNote || '通过'}）` : '尚未复核'}
+                </div>
+                {r.dispatchNote && <div><Tag color="blue">调度处置</Tag>{r.dispatchNote}</div>}
+                {r.complaintCount > 0 && (
+                  <Alert type="warning" showIcon message="游客投诉内容"
+                    description={<pre style={{ margin: 0, whiteSpace: 'pre-wrap' }}>{r.complaintSummary}</pre>} />
+                )}
+                <Space wrap>
+                  <Button type="primary" disabled={r.complaintCount === 0}
+                    onClick={() => Modal.confirm({
+                      title: `处理跳站投诉 ${r.code}`,
+                      content: <Input.TextArea id="skip-cs-note" rows={3}
+                        defaultValue={`核实跳站记录属实，已向游客致歉并发放等待补偿/协助换乘，下一班预计 ${r.nextEtaMinutes} 分钟内到站`} />,
+                      onOk: async () => {
+                        const note = (document.getElementById('skip-cs-note') as HTMLTextAreaElement)?.value || '';
+                        await api.post(`/skip-records/${r.id}/complaint-resolve`, { note });
+                        message.success('处理结论已写回同一条跳站记录与事件时间线');
+                        refresh();
+                      },
+                    })}>登记处理结果</Button>
+                  <span className="muted">结论会同步游客端时间线；主管已复核的记录处理后直接闭环。</span>
+                </Space>
+              </Space>
+            )}
+          </Card>
+        );
+      })}
+    </Space>
+  );
+}
+
+const SKIP_STATUS_LABEL: Record<string, any> = {
+  recorded: <Tag color="orange">待站点确认</Tag>,
+  confirmed: <Tag color="blue">待主管复核</Tag>,
+  reviewed: <Tag color="purple">投诉处理中</Tag>,
+  closed: <Tag color="green">已闭环</Tag>,
+};

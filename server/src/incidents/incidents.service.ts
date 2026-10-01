@@ -14,6 +14,7 @@ export interface CreateIncidentInput {
   stationId?: number | null;
   vehicleId?: number | null;
   refundId?: number | null;
+  skipRecordId?: number | null;
   raisedByRole?: Incident['raisedByRole'];
   ownerRole?: Incident['ownerRole'];
   status?: Incident['status'];
@@ -39,6 +40,7 @@ export class IncidentsService {
       stationId: input.stationId ?? null,
       vehicleId: input.vehicleId ?? null,
       refundId: input.refundId ?? null,
+      skipRecordId: input.skipRecordId ?? null,
       raisedByRole: input.raisedByRole || 'system',
       ownerRole: input.ownerRole || 'dispatch',
       status: input.status || 'open',

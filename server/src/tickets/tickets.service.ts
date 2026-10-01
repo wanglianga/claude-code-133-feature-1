@@ -4,6 +4,7 @@ import { Repository } from 'typeorm';
 import { Ticket, Refund, QueueEntry, Station, Incident } from '../entities';
 import { BuyTicketDto, RefundRequestDto } from './dto';
 import { IncidentsService } from '../incidents/incidents.service';
+import { SkipService } from '../skip/skip.service';
 import { now, seqCode, ticketPrice, waitSeconds } from '../common';
 
 @Injectable()
@@ -14,6 +15,7 @@ export class TicketsService {
     @InjectRepository(QueueEntry) private readonly queue: Repository<QueueEntry>,
     @InjectRepository(Station) private readonly stations: Repository<Station>,
     private readonly incidents: IncidentsService,
+    private readonly skipSvc: SkipService,
   ) {}
 
   /** 游客购票：记录入园时间、起终站、同行人数、婴儿车/老人儿童、预计路线 */
@@ -80,6 +82,7 @@ export class TicketsService {
       this.refunds.find({ where: { ticketId: id }, order: { id: 'ASC' } }),
       this.incidents.byTicketOrTrip(id, ticket.tripId || undefined),
     ]);
+    const skipRecords = await this.skipSvc.forTicket(id);
     const [origin, dest] = await Promise.all([
       this.stations.findOne({ where: { id: ticket.originStationId } }),
       this.stations.findOne({ where: { id: ticket.destStationId } }),
@@ -91,6 +94,7 @@ export class TicketsService {
       queueEntries,
       refunds,
       incidents: incs,
+      skipRecords,
       typeLabel: this.typeName(ticket.type),
       currentWaitSeconds: queueEntries.length
         ? waitSeconds(queueEntries[queueEntries.length - 1].enqueueAt)
